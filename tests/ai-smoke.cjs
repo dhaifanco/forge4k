@@ -14,6 +14,12 @@ const ff=require('../server/ffmpeg'),ai=require('../server/enhance'),{PRESETS}=r
   assert.equal(after.video.width,128);assert.equal(after.video.height,192);assert.equal(after.video.fps,120);assert.ok(after.audio);assert.ok(Math.abs(after.format.durationSec-probe.format.durationSec)<.08);
   assert.equal((await ff.validatePlayback(output)).ok,true);
   assert.equal(fs.readdirSync(root).some(n=>n.startsWith('forge-ai-')),false);
+  const filtered=path.join(root,'denoise-only.mp4'),filterJob={logLines:[],cancelRequested:false};
+  await ai.render({input:output,output:filtered,probe:after,preset:PRESETS.reels_hq,adv:{enhance:{denoise:'gentle'},encoder:'cpu'},job:filterJob,tempRoot:root,bins});
+  const filteredProbe=ff.normalizeProbe((await ff.probe(filtered)).data,filtered);
+  assert.equal(filteredProbe.video.fps,60);assert.ok(Math.abs(filteredProbe.format.durationSec-after.format.durationSec)<.08);
+  assert.deepEqual(filterJob.logLines.filter(line=>line==='Preparing AI frames'),[]);
+  assert.equal((await ff.validatePlayback(filtered)).ok,true);
   const cancelled={logLines:[],cancelRequested:false};
   Object.defineProperty(cancelled,'child',{set(child){if(this.phase==='AI detail enhancement')setTimeout(()=>{this.cancelRequested=true;child.kill();},30);}});
   await assert.rejects(ai.render({input,output:path.join(root,'cancelled.mp4'),probe,preset:PRESETS.reels_hq,adv:{enhance:{scale:2},encoder:'cpu'},job:cancelled,tempRoot:root,bins}),/Cancelled/);

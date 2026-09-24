@@ -41,7 +41,7 @@ function listJobs() {
 // enqueue(payload): { inputPath, sourceName, presetId, adv, sourcePath (original), keepInput }
 function enqueue(payload) {
   const duplicate = [...JOBS.values()].find(j => j._payload?.inputPath === payload.inputPath && ['waiting', 'processing'].includes(j.state));
-  if (duplicate) return jobSnapshot(duplicate);
+  if (duplicate) { const error = new Error('This source already has an active export. Wait for it to finish or cancel it.'); error.status=409; throw error; }
   const id = newId('job');
   const job = {
     id,

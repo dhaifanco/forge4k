@@ -14,6 +14,11 @@ const queue = require('./queue');
 const { listPresets, decideStrategy, buildArgs, PRESETS, recommendPreset, pickEncoder } = presets;
 
 const app = express();
+function route(method, url, ...handlers) {
+  app[method](url, ...handlers.map(handler => (req, res, next) => {
+    try { Promise.resolve(handler(req, res, next)).catch(next); } catch(error) { next(error); }
+  }));
+}
 app.use((req, res, next) => {
   if (process.env.FORGE_API_TOKEN) {
     const supplied = Buffer.from(String(req.headers['x-forge-token'] || ''));
@@ -28,7 +33,7 @@ const uploads = new Map();
 
 const JOBS = queue.JOBS; // V1 job map preserved (same objects the queue manages)
 app.get('/api/updates', (req, res) => res.json(app.locals.updater ? app.locals.updater.snapshot() : { desktop: false, currentVersion: require('../package.json').version, phase: 'idle', feedUrl: '' }));
-for (const action of ['check', 'download', 'importFile', 'install', 'save']) {
+for (const action of ['check', 'download', 'cancelDownload', 'importFile', 'install', 'save']) {
   app.post('/api/updates/' + action, async (req, res) => {
     if (!app.locals.updater) return res.status(400).json({ error: 'Open the desktop application to manage updates.' });
     try { res.json(await app.locals.updater[action](req.body || {})); }
@@ -36,12 +41,21 @@ for (const action of ['check', 'download', 'importFile', 'install', 'save']) {
   });
 }
 app.get('/api/enhancement', (_req, res) => res.json(enhance.status()));
+app.delete('/api/uploads/:id', (req,res) => {
+  const id=req.params.id;
+  if(!/^[a-f0-9]{32}(\.[a-z0-9]+)?$/.test(id)) return res.status(400).json({error:'Invalid staged video.'});
+  const input=path.join(store.UPLOADS_DIR,id);
+  const owners=[...queue.JOBS.values()].filter(j=>j._payload?.inputPath===input);
+  if(owners.length) { for(const job of owners) job._payload.keepInput=false; }
+  else if(fs.existsSync(input)) fs.unlinkSync(input);
+  uploads.delete(id); res.json({ok:true,retainedByQueue:owners.length>0});
+});
 app.get('/api/queue/:id/video', (req, res) => {
   const job = queue.getJob(req.params.id);
   if (job?.state !== 'completed' || !job.result?.preview || !fs.existsSync(job.result.output.path)) return res.status(404).json({ error: 'Completed sample not found.' });
   res.sendFile(path.resolve(job.result.output.path));
 });
-app.post('/api/plan', async (req, res) => {
+route('post', '/api/plan', async (req, res) => {
   try {
     const id = String(req.body.uploadId || '');
     if (!/^[a-f0-9]{32}(\.[a-z0-9]+)?$/.test(id)) throw new Error('Import a source video first.');
@@ -68,7 +82,7 @@ app.post('/api/plan', async (req, res) => {
 });
 
 // ---------- health / binaries ----------
-app.get('/api/health', async (req, res) => {
+route('get', '/api/health', async (req, res) => {
   const bins = await ff.locateBinaries();
   res.json({
     ok: true,
@@ -81,14 +95,14 @@ app.get('/api/health', async (req, res) => {
   });
 });
 
-app.post('/api/detect-ffmpeg', async (req, res) => {
+route('post', '/api/detect-ffmpeg', async (req, res) => {
   ff.clearBinCache();
   const bins = await ff.locateBinaries();
   res.json({ ok: bins.ok, ffmpeg: bins.ffmpegPath, ffprobe: bins.ffprobePath });
 });
 
 // One-click Windows setup: download gyan.dev essentials build, extract with tar, register in settings.
-app.post('/api/setup-ffmpeg', async (req, res) => {
+route('post', '/api/setup-ffmpeg', async (req, res) => {
   if (process.platform !== 'win32') return res.status(400).json({ error: 'Automatic setup is Windows-only; install ffmpeg with your package manager.' });
   const installDir = path.join(process.env.LOCALAPPDATA || store.DATA_DIR, 'ffmpeg');
   const url = 'https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip';
@@ -150,7 +164,7 @@ app.post('/api/setup-ffmpeg', async (req, res) => {
 });
 
 // ---------- GPU (V2) ----------
-app.get('/api/gpu', async (req, res) => {
+route('get', '/api/gpu', async (req, res) => {
   const bins = await ff.locateBinaries();
   const force = req.query.refresh === '1';
   const info = await gpu.detectGpu(bins.ffmpegPath, force);
@@ -158,7 +172,7 @@ app.get('/api/gpu', async (req, res) => {
   res.json({ gpu: info, stats });
 });
 
-app.get('/api/gpu/stats', async (req, res) => {
+route('get', '/api/gpu/stats', async (req, res) => {
   const stats = await gpu.gpuStats();
   res.json({ stats });
 });
@@ -169,7 +183,7 @@ app.get('/api/presets', (req, res) => res.json({ presets: listPresets() }));
 // ---------- analyze ----------
 const upload = multer({ dest: store.UPLOADS_DIR });
 
-app.post('/api/analyze', upload.single('file'), async (req, res) => {
+route('post', '/api/analyze', upload.single('file'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'No file received' });
   // multer stages uploads extension-less; restore the original extension so
   // container detection (and humans) can tell MOV from MP4 downstream
@@ -184,6 +198,7 @@ app.post('/api/analyze', upload.single('file'), async (req, res) => {
     return res.status(422).json({ error: raw.error || 'Could not read this file with ffprobe' });
   }
   const p = ff.normalizeProbe(raw.data, req.file.path);
+  if (!p.video.width || !p.video.height) { fs.unlinkSync(req.file.path); return res.status(422).json({error:'The input has no usable video stream.'}); }
   p.health = ff.assessHealth(p);
   const bins = await ff.locateBinaries();
   const gpuInfo = await gpu.detectGpu(bins.ffmpegPath);
@@ -194,7 +209,7 @@ app.post('/api/analyze', upload.single('file'), async (req, res) => {
   res.json(p);
 });
 
-app.post('/api/analyze-path', async (req, res) => {
+route('post', '/api/analyze-path', async (req, res) => {
   const p = String((req.body || {}).path || '');
   if (!p || !fs.existsSync(p)) return res.status(400).json({ error: 'Path not found: ' + p });
   const raw = await ff.probe(p);
@@ -209,14 +224,15 @@ app.post('/api/analyze-path', async (req, res) => {
 
 // ---------- optimize (V1 API preserved; V2 routes through the batch queue) ----------
 // Two entry points: /api/optimize (multipart upload) and /api/optimize-id (reuse analyze temp file).
-app.post('/api/optimize', upload.single('file'), async (req, res) => {
+route('post', '/api/optimize', upload.single('file'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'No file received' });
   startJob(req.file.path, req.body || {}, req.file.originalname || null, res);
 });
 
-app.post('/api/optimize-id', async (req, res) => {
+route('post', '/api/optimize-id', async (req, res) => {
   const body = req.body || {};
   const id = String(body.uploadId || '');
+  if (!/^[a-f0-9]{32}(\.[a-z0-9]+)?$/.test(id)) return res.status(400).json({error:'Import a source video first.'});
   const inputPath = path.join(store.UPLOADS_DIR, path.basename(id));
   if (!id || !fs.existsSync(inputPath)) return res.status(400).json({ error: 'Analyzed file no longer staged — drop the file again.' });
   startJob(inputPath, body, uploads.get(id), res);
@@ -285,7 +301,7 @@ async function startJob(inputPath, body, originalName, res) {
 
     setImmediate(() => queue.pump());
   } catch (e) {
-    if (!res.headersSent) res.status(500).json({ error: String(e.message || e) });
+    if (!res.headersSent) res.status(e.status || 400).json({ error: String(e.message || e) });
   }
 }
 
@@ -339,7 +355,7 @@ app.post('/api/optimize/:id/cancel', (req, res) => {
 });
 
 // ---------- batch analyze (V2) ----------
-app.post('/api/analyze-batch', upload.array('files', 30), async (req, res) => {
+route('post', '/api/analyze-batch', upload.array('files', 30), async (req, res) => {
   if (!req.files || !req.files.length) return res.status(400).json({ error: 'No files received' });
   const bins = await ff.locateBinaries();
   const gpuInfo = await gpu.detectGpu(bins.ffmpegPath);
@@ -356,6 +372,7 @@ app.post('/api/analyze-batch', upload.array('files', 30), async (req, res) => {
       continue;
     }
     const p = ff.normalizeProbe(raw.data, f.path);
+    if (!p.video.width || !p.video.height) { fs.unlinkSync(f.path); results.push({name:f.originalname,ok:false,error:'The input has no usable video stream.'}); continue; }
     p.health = ff.assessHealth(p);
     p.recommendation = recommendPreset(p, gpuInfo);
     p.uploadId = path.basename(f.path);
@@ -387,7 +404,7 @@ app.get('/api/settings', (req, res) => {
   res.json({ ...store.getSettings(), dataDir: store.DATA_DIR });
 });
 
-app.post('/api/settings', async (req, res) => {
+route('post', '/api/settings', async (req, res) => {
   const patch = req.body || {};
   const clean = {};
   if (typeof patch.ffmpegPath === 'string') clean.ffmpegPath = patch.ffmpegPath.trim();
@@ -403,10 +420,10 @@ app.post('/api/settings', async (req, res) => {
   res.json({ ok: true, settings: store.getSettings(), ffmpegReady: bins.ok });
 });
 
-app.post('/api/open-folder', (req, res) => {
+route('post', '/api/open-folder', async (req, res) => {
   const dir = String((req.body || {}).path || store.getSettings().outDir);
   if (!fs.existsSync(dir)) return res.status(400).json({ error: 'Folder does not exist' });
-  if (process.versions.electron) require('electron').shell.openPath(dir);
+  if (process.versions.electron) { const error = await require('electron').shell.openPath(dir); if(error) throw new Error(error); }
   else execFile(process.platform === 'win32' ? 'explorer.exe' : process.platform === 'darwin' ? 'open' : 'xdg-open', [dir], { windowsHide: true }, () => {});
   res.json({ ok: true });
 });
@@ -417,6 +434,15 @@ app.use(express.static(DIST));
 app.get('*', (req, res, next) => {
   if (req.path.startsWith('/api/')) return next();
   res.sendFile(path.join(DIST, 'index.html'));
+});
+app.use((error, _req, res, next) => {
+  if (res.headersSent) return next(error);
+  for(const file of _req.files || (_req.file ? [_req.file] : [])) {
+    if(path.dirname(path.resolve(file.path))!==path.resolve(store.UPLOADS_DIR)) continue;
+    if([...queue.JOBS.values()].some(job=>job._payload?.inputPath===file.path)) continue;
+    try{fs.unlinkSync(file.path);}catch{} uploads.delete(path.basename(file.path));
+  }
+  res.status(error.status || (error instanceof multer.MulterError ? 400 : 500)).json({error:error.message || 'Request failed.'});
 });
 
 function startServer(port = Number(process.env.PORT || 5177)) {

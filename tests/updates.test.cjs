@@ -66,9 +66,52 @@ test('offline update checks signature, preserves app data and blocks installatio
     assert.equal((await updater.importFile()).phase, 'ready');
     await assert.rejects(updater.install(), /Finish or cancel/);
     assert.equal(launched, false);
-    await updater.importFile(); busy = false;
+    assert.equal(updater.snapshot().phase, 'ready'); busy = false;
     assert.equal((await updater.install()).phase, 'installing');
     assert.equal(launched, true);
     assert.equal(fs.readFileSync(path.join(folder, 'settings.json'), 'utf8'), '{"keep":"yes"}');
   } finally { if (previous == null) delete process.env.FORGE_DATA_DIR; else process.env.FORGE_DATA_DIR = previous; }
+});
+
+test('download resumes an interrupted byte range and preserves existing files', async () => {
+  const folder=fs.mkdtempSync(path.join(os.tmpdir(),'forge-resume-')), destination=path.join(folder,'update.exe');
+  const original=global.fetch;let calls=0;
+  try {
+    global.fetch=async(_url,{headers})=>{
+      const [start,end]=headers.Range.match(/\d+/g).map(Number);calls++;
+      const bytes=content.subarray(start,end+1);
+      if(calls===1){let sent=false;return new Response(new ReadableStream({pull(controller){if(!sent){sent=true;controller.enqueue(bytes.subarray(0,3));}else controller.error(new Error('Dropped connection'));}}),{status:206,headers:{'Content-Range':`bytes ${start}-${end}/${content.length}`}});}
+      return new Response(bytes,{status:206,headers:{'Content-Range':`bytes ${start}-${end}/${content.length}`}});
+    };
+    await core.downloadInstaller('https://example.com/setup.exe',destination,release,()=>{},{chunkSize:8});
+    assert.ok(calls>2);assert.deepEqual(fs.readFileSync(destination),content);
+    await assert.rejects(core.downloadInstaller('https://example.com/setup.exe',destination,release),/already exists/);
+    assert.deepEqual(fs.readFileSync(destination),content);
+    assert.deepEqual(fs.readdirSync(folder),['update.exe']);
+  } finally {global.fetch=original;}
+});
+
+test('stalled downloads and cancellation terminate and clean only partial data',async()=>{
+  const folder=fs.mkdtempSync(path.join(os.tmpdir(),'forge-stall-')),destination=path.join(folder,'update.exe');
+  const original=global.fetch;
+  try{
+    global.fetch=async(_url,{signal})=>new Response(new ReadableStream({start(controller){signal.addEventListener('abort',()=>controller.error(signal.reason),{once:true});}}));
+    await assert.rejects(core.downloadInstaller('https://example.com/setup.exe',destination,release,()=>{},{idleTimeoutMs:20,maxRetries:0}),/stalled/);
+    assert.deepEqual(fs.readdirSync(folder),[]);
+    const controller=new AbortController();controller.abort();
+    await assert.rejects(core.downloadInstaller('https://example.com/setup.exe',destination,release,()=>{},{signal:controller.signal}));
+    assert.deepEqual(fs.readdirSync(folder),[]);
+  }finally{global.fetch=original;}
+});
+
+test('update manager pins release URL and cancelled downloads can be retried',async()=>{
+  const previous=process.env.FORGE_DATA_DIR;process.env.FORGE_DATA_DIR=fs.mkdtempSync(path.join(os.tmpdir(),'forge-manager-'));
+  const fetchManifest=core.fetchManifest,downloadInstaller=core.downloadInstaller;let requested;
+  core.fetchManifest=async()=>sign(release);
+  core.downloadInstaller=async(url,_file,_release,_progress,{signal})=>{requested=url;await new Promise((_resolve,reject)=>signal.addEventListener('abort',()=>reject(signal.reason),{once:true}));};
+  try{
+    const updater=require('../desktop/updates.cjs').createUpdates({app:{getVersion:()=> '1.1.0'},dialog:{},getWindow:()=>null,busy:()=>false,beforeInstall:()=>{},trustedKey:keys.publicKey});
+    await updater.check();const download=updater.download();updater.cancelDownload();await assert.rejects(download);
+    assert.equal(updater.snapshot().phase,'available');assert.match(updater.snapshot().error,/cancelled/);assert.match(requested,/releases\/download\/v1\.2\.0\/Forge-1\.2\.0-setup\.exe$/);
+  }finally{core.fetchManifest=fetchManifest;core.downloadInstaller=downloadInstaller;if(previous==null)delete process.env.FORGE_DATA_DIR;else process.env.FORGE_DATA_DIR=previous;}
 });

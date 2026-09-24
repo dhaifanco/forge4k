@@ -8,6 +8,7 @@ export const api = {
   updates: () => fetch('/api/updates').then(j),
   updateAction: (action, body = {}) => fetch('/api/updates/' + action, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(j),
   enhancement: () => fetch('/api/enhancement').then(j),
+  releaseUpload: id => fetch('/api/uploads/' + encodeURIComponent(id), {method:'DELETE',keepalive:true}).then(j),
   plan: (uploadId, preset, enhance, preview = false) => fetch('/api/plan', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ uploadId, preset, enhance, preview }) }).then(j),
   health: () => fetch('/api/health').then(j),
   detect: () => fetch('/api/detect-ffmpeg', { method: 'POST' }).then(j),
@@ -66,7 +67,7 @@ export const fmtBytes = (b) => {
 };
 
 export const fmtDur = (s) => {
-  if (!s || !isFinite(s)) return 'Not available';
-  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = Math.round(s % 60);
+  if (s == null || !isFinite(s) || s < 0) return 'Not available';
+  const total = Math.round(s), h = Math.floor(total / 3600), m = Math.floor((total % 3600) / 60), sec = total % 60;
   return (h ? h + 'h ' : '') + (m ? m + 'm ' : '') + sec + 's';
 };

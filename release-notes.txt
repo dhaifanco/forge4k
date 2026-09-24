@@ -1,8 +1,7 @@
-Forge 1.2.0
+Forge 1.2.1
 
-New local enhancement controls for camera footage: 2x/4x Real-ESRGAN detail and RIFE 60/120fps interpolation.
-Gentle temporal noise reduction, explicitly labelled as a non-AI filter.
-Render a 5-second sample and play it in the export queue before committing to a full export.
-AI engines and selected models are included. No separate model download is needed.
-Enhancement outputs SDR and needs a compatible GPU plus temporary disk space. 120fps requires the Master preset.
-This is an initial enhancement release, not Topaz feature or quality parity. AI can alter details and create motion artifacts. Compare a sample first.
+AI detail enhancement now runs before frame interpolation, reducing unnecessary neural inference. Fixed-clip benchmark: 23.1s to 7.8s; actual export time varies with footage and hardware.
+Noise-only exports avoid intermediate PNG sequences. AI stages report frame progress, speed and estimated remaining time.
+Update downloads use bounded byte ranges with stall recovery, retries and cancellation. Verified installers remain ready when exports prevent installation.
+Fixed invalid-media API failures, duplicate exports, staged-file cleanup, incomplete model detection, false HDR classification and duration formatting.
+Existing 1.1/1.2 users whose old updater stalls should install this setup executable once. Data and settings remain outside the application directory.

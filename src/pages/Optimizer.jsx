@@ -16,6 +16,8 @@ export default function Optimizer() {
     if (sampleId && queue.some(j => j.id === sampleId && ['completed', 'failed', 'cancelled'].includes(j.state))) setSampleId(null);
   }, [queue, sampleId]);
   const urls = React.useRef(new Set());
+  const staged = React.useRef(new Set());
+  const mounted = React.useRef(true);
   const item = items.find(it => it.uploadId === selectedId) || items[0];
   const selectedPreset = presets.find(p => p.id === item?.preset);
   React.useEffect(() => {
@@ -23,7 +25,8 @@ export default function Optimizer() {
     api.settings().then(setSettings).catch(e => setError(e.message));
     api.gpu().then(d => setGpu(d.gpu)).catch(() => setGpu({ available: false }));
     api.enhancement().then(setEngines).catch(e => setError(e.message));
-    return () => { for (const url of urls.current) URL.revokeObjectURL(url); };
+    mounted.current = true;
+    return () => { mounted.current = false; for (const url of urls.current) URL.revokeObjectURL(url); for (const id of staged.current) api.releaseUpload(id).catch(() => {}); };
   }, []);
   React.useEffect(() => {
     let stopped = false, timer;
@@ -45,10 +48,12 @@ export default function Optimizer() {
     setPhase('analyzing'); setError('');
     try {
       const d = await api.analyzeBatch(files);
+      if (!mounted.current) { for (const it of d.items) if(it.uploadId) api.releaseUpload(it.uploadId).catch(() => {}); return; }
       const added = [], failed = [];
       d.items.forEach((it, index) => {
         if (!it.uploadId) { failed.push(it.name + ': ' + it.error); return; }
         const url = URL.createObjectURL(files[index]); urls.current.add(url);
+        staged.current.add(it.uploadId);
         added.push({ ...it, url, preset: it.recommendation?.presetId || 'tiktok_1080p60' });
       });
       setItems(prev => [...prev, ...added]);
@@ -61,6 +66,7 @@ export default function Optimizer() {
     const source = items.find(it => it.uploadId === id);
     if (source) { URL.revokeObjectURL(source.url); urls.current.delete(source.url); }
     setItems(prev => prev.filter(it => it.uploadId !== id));
+    staged.current.delete(id); api.releaseUpload(id).catch(e => setError(e.message));
   }
   function preset(value, all = false) { setItems(prev => prev.map(it => all || it.uploadId === item?.uploadId ? { ...it, preset: value } : it)); }
   async function exportAll(preview = false) {
@@ -146,7 +152,7 @@ function QueueRow({ job, action }) {
       {job.result?.output && <button className="btn small-btn" onClick={() => action(() => api.openFolder(job.result.output.dir))}>Show file</button>}
       <button className="icon-button" aria-label={'Remove job ' + job.sourceName} onClick={() => action(() => api.queueRemove(job.id))}><Icon name="close" size={16}/></button>
     </>}</div></div>
-    {job.state === 'processing' && <div className="queue-progress"><progress aria-label={'Export progress for ' + job.sourceName} max="100" value={job.phase === 'validating' ? undefined : job.progress?.pct ?? undefined}/><span>{job.phase === 'validating' ? 'Decoding the output to check for errors' : job.progress?.pct != null ? `${Math.round(job.progress.pct)}% · ${job.progress.speed || 'Calculating speed'}` : 'Preparing media'}</span></div>}
+    {job.state === 'processing' && <div className="queue-progress"><progress aria-label={'Export progress for ' + job.sourceName} max="100" value={job.phase === 'validating' ? undefined : job.progress?.pct ?? undefined}/><span>{job.phase === 'validating' ? 'Decoding the output to check for errors' : job.progress?.pct != null ? `${Math.round(job.progress.pct)}% of this stage · ${job.progress.speed || 'Calculating speed'}${job.progress.etaSec != null ? ' · about ' + fmtDur(job.progress.etaSec) + ' remaining in this stage' : ''}` : job.phase || 'Preparing media'}</span></div>}
     {job.error && <ErrorBar>{job.error}</ErrorBar>}
     {job.result && <p className="completed-specs">{job.result.afterSpecs?.video.resolution} · {job.result.afterSpecs?.video.fps} fps · {job.result.output.size?.human} · Decode check passed</p>}
     {job.result?.preview && <div className="sample-preview"><p className="field-help">Enhanced sample. Compare with your source monitor above.</p><video controls preload="metadata" src={'/api/queue/' + encodeURIComponent(job.id) + '/video'} aria-label={'Enhanced sample of ' + job.sourceName}/></div>}

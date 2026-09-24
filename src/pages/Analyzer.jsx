@@ -3,7 +3,7 @@ import { api } from '../api';
 import { Card, Spec, Badge, DropZone, ErrorBar, Icon } from '../ui.jsx';
 export default function Analyzer() {
   const [info, setInfo] = React.useState(null), [busy, setBusy] = React.useState(false), [error, setError] = React.useState('');
-  async function inspect(file) { setBusy(true); setError(''); try { setInfo(await api.analyze(file)); } catch (e) { setError(e.message); } finally { setBusy(false); } }
+  async function inspect(file) { setBusy(true); setError(''); try { const data = await api.analyze(file); setInfo(data); await api.releaseUpload(data.uploadId); } catch (e) { setError(e.message); } finally { setBusy(false); } }
   const v = info?.video, a = info?.audio;
   return <div className="page"><header className="page-head"><div><div className="eyebrow">Know your source</div><h1>Video Analyzer</h1><p className="page-sub">Inspect the file before making export decisions.</p></div>{info && <DropZone compact label="Inspect another video" onFile={inspect} busy={busy}/>}</header><ErrorBar>{error}</ErrorBar>
     {busy ? <div className="loading-state" role="status"><span className="spinner"/>Reading media specifications</div> : !info ? <DropZone onFile={inspect} label="Choose a video to inspect"/> : <>

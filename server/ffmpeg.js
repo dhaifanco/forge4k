@@ -141,8 +141,8 @@ function probe(file) {
 // ---- Normalization of probe data ----
 function fracToFps(str) {
   if (!str) return null;
-  const [a, b] = String(str).split('/').map(Number);
-  if (!a || !b) return null;
+  const [a, b = 1] = String(str).split('/').map(Number);
+  if (!Number.isFinite(a) || !Number.isFinite(b) || a <= 0 || b <= 0) return null;
   return Math.round((a / b) * 1000) / 1000;
 }
 
@@ -179,7 +179,7 @@ function normalizeProbe(raw, filePath) {
       fps: fracToFps(v.avg_frame_rate) || fracToFps(v.r_frame_rate), fpsRaw: { avg: v.avg_frame_rate, r: v.r_frame_rate },
       bitrate: bitRate ? Math.round(bitRate / 1000) + ' kbps' : '—', pixFmt: v.pix_fmt || null, bitDepth: pixDepth(v.pix_fmt),
       colorSpace: v.color_space || null, colorTransfer: v.color_transfer || null, colorPrimaries: v.color_primaries || null,
-      chromaLocation: v.chroma_location || null, isHdr: /arib|smpte|bt2020/.test(String(v.color_space || '') + String(v.color_transfer || '') + String(v.color_primaries || '')),
+      chromaLocation: v.chroma_location || null, isHdr: /^(smpte2084|arib-std-b67)$/.test(String(v.color_transfer || '')),
       fieldOrder: v.field_order || null, nbFrames: v.nb_frames || null
     },
     audio: a ? {
@@ -206,8 +206,8 @@ function cleanTags(tags) {
 }
 
 function fmtDur(s) {
-  if (!s || !isFinite(s)) return '—';
-  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = Math.round(s % 60);
+  if (s == null || !isFinite(s) || s < 0) return 'Not available';
+  const total = Math.round(s), h = Math.floor(total / 3600), m = Math.floor((total % 3600) / 60), sec = total % 60;
   return (h ? h + 'h ' : '') + (m ? m + 'm ' : '') + sec + 's';
 }
 

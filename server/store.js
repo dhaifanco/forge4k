@@ -111,6 +111,17 @@ function cleanTempDir(olderThanMs) {
   let removed = 0;
   const now = Date.now();
   for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+    if (e.isDirectory() && /^forge-ai-[a-f0-9-]+$/.test(e.name)) {
+      const folder=path.resolve(dir,e.name);
+      if(path.dirname(folder)!==path.resolve(dir)) continue;
+      try {
+        if (now-fs.statSync(folder).mtimeMs < (olderThanMs || 24*3600*1000)) continue;
+        const owner=readJSON(path.join(folder,'owner.json'),{});
+        if(Number.isInteger(owner.pid) && owner.pid>0){try{process.kill(owner.pid,0);continue;}catch(error){if(error.code!=='ESRCH')continue;}}
+        fs.rmSync(folder,{recursive:true,force:true});removed++;
+      } catch {}
+      continue;
+    }
     if (!e.isFile() || !/^job_[a-z0-9]+\.part\.mp4$/.test(e.name)) continue;
     const full = path.join(dir, e.name);
     try {

@@ -15,10 +15,15 @@ test('AI plan respects portrait, social cap, SDR and preview duration', () => {
 });
 test('invalid AI settings, remux and incompatible motion are rejected', () => {
   assert.throws(()=>ai.options({scale:99}));
+  assert.throws(()=>ai.options({scale:0}));
+  assert.throws(()=>ai.options({fps:NaN}));
   assert.throws(()=>ai.options({fps:NaN,denoise:'invented'}));
   assert.throws(()=>ai.plan(probe,PRESETS.remux,{scale:2}));
   assert.throws(()=>ai.plan(probe,PRESETS.reels_hq,{fps:120}));
   assert.throws(()=>ai.plan({...probe,video:{...probe.video,fps:120}},PRESETS.master_4k120,{fps:60}));
+});
+test('noise-only plan needs no intermediate PNG storage',()=>{
+  assert.equal(ai.plan(probe,PRESETS.reels_hq,{denoise:'gentle'}).scratchBytes,0);
 });
 test('AI cleanup refuses unrelated files and only removes its own workspace', () => {
   const root=path.resolve('.test-data','ai-cleanup'); fs.mkdirSync(root,{recursive:true});
