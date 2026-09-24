@@ -34,6 +34,26 @@ module.exports = async function smoke(window, folder) {
     await run(`(()=>{ const s=document.querySelector('#export-preset'); s.value='master_4k120'; s.dispatchEvent(new Event('change',{bubbles:true})); })()`);
     await pause(350);
     assert.equal(await run(`document.querySelector('#export-preset').value`), 'master_4k120');
+    if (process.env.FORGE_SMOKE_AI) {
+      await run(`document.querySelector('.enhancement-controls summary').click()`);
+      for (const [id,value] of [['ai-scale','2'],['ai-fps','120'],['ai-noise','gentle']]) {
+        await run(`(()=>{const s=document.getElementById(${JSON.stringify(id)});s.value=${JSON.stringify(value)};s.dispatchEvent(new Event('change',{bubbles:true}));})()`); await pause(400);
+      }
+      assert.equal(await run(`document.querySelector('#ai-fps').value`),'120');
+      await capture('ai-controls');
+      await click('Export 5-second sample');
+      for(let i=0;i<480;i++){if(await run(`!!document.querySelector('.sample-preview video')`))break;await pause(250);}
+      assert.equal(await run(`!!document.querySelector('.sample-preview video')`),true);
+      await pause(600);
+      assert.equal(await run(`document.querySelector('.sample-preview video').error`),null);
+      assert.equal(await run(`document.querySelectorAll('.source-row').length`),1);
+      await run(`document.querySelector('.sample-preview').scrollIntoView({block:'center'})`); await capture('ai-sample');
+      for(const [id,value] of [['ai-scale','1'],['ai-fps','0'],['ai-noise','off']]){
+        await run(`(()=>{const s=document.getElementById(${JSON.stringify(id)});s.value=${JSON.stringify(value)};s.dispatchEvent(new Event('change',{bubbles:true}));})()`);await pause(300);
+      }
+      await click('Clear finished jobs');
+      result.ai='Real 2x detail + RIFE 120fps + gentle noise reduction; sample playback without errors; source retained for full export';
+    }
     await run(`(()=>{ const s=document.querySelector('#export-preset'); s.value='tiktok_1080p60'; s.dispatchEvent(new Event('change',{bubbles:true})); })()`);
     await pause(350);
     await run(`document.querySelector('.export-button').click()`);
@@ -49,6 +69,7 @@ module.exports = async function smoke(window, folder) {
     assert.equal(await run(`document.querySelector('.history-record').open`), true);
     await click('Clear history'); await click('Keep history');
     await click('Remove record');
+    if (process.env.FORGE_SMOKE_AI) { await click('Clear history'); await click('Clear records'); }
     assert.equal(await run(`!!document.querySelector('.empty-state')`), true);
   }
   await navigate('Settings');

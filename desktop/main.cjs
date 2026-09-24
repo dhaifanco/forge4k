@@ -5,6 +5,7 @@ const fs = require('fs');
 const crypto = require('crypto');
 let server, window, closing = false;
 const smoke = process.argv.includes('--smoke-test');
+if (smoke && process.env.FORGE_DATA_DIR) app.setPath('userData', path.join(process.env.FORGE_DATA_DIR, 'electron-profile'));
 if (!app.requestSingleInstanceLock()) app.quit();
 else {
   app.on('second-instance', () => { if (window) { window.restore(); window.focus(); } });

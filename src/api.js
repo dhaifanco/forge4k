@@ -7,7 +7,8 @@ const j = async (res) => {
 export const api = {
   updates: () => fetch('/api/updates').then(j),
   updateAction: (action, body = {}) => fetch('/api/updates/' + action, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(j),
-  plan: (uploadId, preset) => fetch('/api/plan', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ uploadId, preset }) }).then(j),
+  enhancement: () => fetch('/api/enhancement').then(j),
+  plan: (uploadId, preset, enhance, preview = false) => fetch('/api/plan', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ uploadId, preset, enhance, preview }) }).then(j),
   health: () => fetch('/api/health').then(j),
   detect: () => fetch('/api/detect-ffmpeg', { method: 'POST' }).then(j),
   setupFfmpeg: () => fetch('/api/setup-ffmpeg', { method: 'POST' }).then(j),

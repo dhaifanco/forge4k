@@ -8,6 +8,7 @@ const store = require('./store');
 const ff = require('./ffmpeg');
 const presetsMod = require('./presets');
 const gpuMod = require('./gpu');
+const enhance = require('./enhance');
 const { PRESETS, decideStrategy, buildArgs } = presetsMod;
 
 // Single source of truth for job records. V1 /api/optimize writes here too.
@@ -169,6 +170,8 @@ async function runJob(job) {
   const settings = store.getSettings();
   let advUser = {};
   try { advUser = typeof adv === 'string' ? JSON.parse(adv) : (adv || {}); } catch (e) {}
+  const enhanced = enhance.options(advUser.enhance).enabled;
+  if (advUser.preview) payload.keepInput = true;
 
   const bins = await ff.locateBinaries();
   if (!bins.ok) throw new Error('FFmpeg not found — run setup in Settings first.');
@@ -182,8 +185,10 @@ async function runJob(job) {
   const gpu = await currentGpu();
   if (job.cancelRequested) throw new Error('Cancelled');
   const useGpu = settings.preferGpu !== false && advUser.encoder !== 'cpu';
-  const strategy = decideStrategy(before, presetDef, advUser);
+  const enhancementPlan = enhanced ? enhance.plan(before, presetDef, advUser.enhance, advUser.preview) : null;
+  const strategy = enhancementPlan ? { reencode: true, reencodeVideo: true, reencodeAudio: true, reason: enhancementPlan.reason } : decideStrategy(before, presetDef, advUser);
   const advFull = Object.assign({}, advUser, presetDef.target ? { target: presetDef.target } : {});
+  if (enhancementPlan) advFull.target = { ...advFull.target, vcodec: enhancementPlan.codec };
   advFull.gpu = useGpu ? gpu : null;
   if (strategy.reencode && strategy.reencodeVideo) {
     // Same gate as the args: pass the useGpu-filtered value, not raw detection,
@@ -202,24 +207,24 @@ async function runJob(job) {
   store.ensureDir(outDir);
   const tempDir = store.getSettings().tempDirEffective;
   store.ensureDir(tempDir);
-  const finalName = uniqueOutPath(outDir, buildOutputName(job.sourceName, presetDef));
+  const finalName = uniqueOutPath(outDir, buildOutputName(job.sourceName + (enhanced ? (advUser.preview ? ' [AI sample]' : ' [AI]') + '.mp4' : ''), presetDef));
   const tmpOutput = path.join(outDir, job.id + '.part.mp4');
   job.tempOutput = tmpOutput;
 
   const args = buildArgs({ input: inputPath, output: tmpOutput, probe: before, strategy, adv: advFull });
-  job.command = 'ffmpeg ' + args.join(' ');
-  job.accel = advFull.accelLabel;
+  job.command = enhanced ? enhancementPlan.reason : 'ffmpeg ' + args.join(' ');
+  job.accel = (enhanced ? 'AI / ' : '') + advFull.accelLabel;
   job.encoderName = advFull.encoderName || 'copy';
   job.presetName = presetDef.name;
   job.reason = strategy.reason;
   job.outputFinal = finalName;
   job.outDir = outDir;
 
-  const durationSec = before.format.durationSec || 0;
+  const durationSec = enhancementPlan?.duration || before.format.durationSec || 0;
   const t0 = Date.now();
   let lastLog = 0;
 
-  const run = await ff.runBin(bins.ffmpegPath, args, {
+  const run = enhanced ? await enhance.render({ input: inputPath, output: tmpOutput, probe: before, preset: presetDef, adv: advFull, job, tempRoot: tempDir, bins }) : await ff.runBin(bins.ffmpegPath, args, {
     timeoutMs: 1000 * 60 * 60 * 3,
     onSpawn: (child) => { job.child = child; if (job.cancelRequested) child.kill(); },
     onProgressKv: (kv) => {
@@ -307,6 +312,8 @@ async function runJob(job) {
   job.state = 'completed'; job.status = 'done';
   job.result = {
     id: job.id,
+    preview: enhanced && !!advUser.preview,
+    enhancement: enhancementPlan,
     preset: presetDef.id, presetName: presetDef.name,
     mode: strategy.reencode ? 're-encode' : 'lossless remux',
     accel: advFull.accelLabel,

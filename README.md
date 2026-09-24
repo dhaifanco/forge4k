@@ -5,7 +5,7 @@ A local Windows video studio for preparing TikTok and Instagram Reels exports.
 ## Download
 
 [Download the latest Windows release](https://github.com/dhaifanco/forge4k/releases/latest).
-Choose `Forge-1.1.0-setup.exe` to install, or `Forge-1.1.0-portable.exe` to run directly. The runtime, FFmpeg and FFprobe are included.
+Choose the latest setup executable to install, or the portable executable to run directly. The runtime, FFmpeg, FFprobe and selected AI models are included.
 
 ## Features
 
@@ -14,6 +14,7 @@ Choose `Forge-1.1.0-setup.exe` to install, or `Forge-1.1.0-portable.exe` to run 
 - HEVC 4K120 master export when supported by the source. No synthetic frame interpolation.
 - Export queue, decode validation, retries and local history.
 - Signed GitHub updates and offline update import.
+- Real-ESRGAN 2x/4x detail enhancement, RIFE 60/120fps interpolation, gentle temporal noise reduction and playable 5-second samples. [Enhancement guide and limitations](docs/AI-ENHANCEMENT.md).
 
 Platforms still apply their own compression. Forge cannot guarantee lossless TikTok/Instagram playback or 4K120 delivery online.
 

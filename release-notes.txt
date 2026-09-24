@@ -1,6 +1,8 @@
-Forge 1.1.0
+Forge 1.2.0
 
-Redesigned video workspace with local preview, export planning and clearer queue controls.
-New update center: GitHub release checks, verified downloads and offline update import.
-Release manifests are signed by the publisher; installers are verified before launch.
-Portrait-safe social exports and separate 4K120 master presets remain available.
+New local enhancement controls for camera footage: 2x/4x Real-ESRGAN detail and RIFE 60/120fps interpolation.
+Gentle temporal noise reduction, explicitly labelled as a non-AI filter.
+Render a 5-second sample and play it in the export queue before committing to a full export.
+AI engines and selected models are included. No separate model download is needed.
+Enhancement outputs SDR and needs a compatible GPU plus temporary disk space. 120fps requires the Master preset.
+This is an initial enhancement release, not Topaz feature or quality parity. AI can alter details and create motion artifacts. Compare a sample first.

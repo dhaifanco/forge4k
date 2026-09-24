@@ -8,6 +8,7 @@ const crypto = require('crypto');
 const store = require('./store');
 const ff = require('./ffmpeg');
 const gpu = require('./gpu');
+const enhance = require('./enhance');
 const presets = require('./presets');
 const queue = require('./queue');
 const { listPresets, decideStrategy, buildArgs, PRESETS, recommendPreset, pickEncoder } = presets;
@@ -34,6 +35,12 @@ for (const action of ['check', 'download', 'importFile', 'install', 'save']) {
     catch (error) { res.status(400).json({ error: error.message }); }
   });
 }
+app.get('/api/enhancement', (_req, res) => res.json(enhance.status()));
+app.get('/api/queue/:id/video', (req, res) => {
+  const job = queue.getJob(req.params.id);
+  if (job?.state !== 'completed' || !job.result?.preview || !fs.existsSync(job.result.output.path)) return res.status(404).json({ error: 'Completed sample not found.' });
+  res.sendFile(path.resolve(job.result.output.path));
+});
 app.post('/api/plan', async (req, res) => {
   try {
     const id = String(req.body.uploadId || '');
@@ -44,6 +51,11 @@ app.post('/api/plan', async (req, res) => {
     const probe = ff.normalizeProbe(raw.data, input);
     const preset = PRESETS[req.body.preset];
     if (!preset) throw new Error('Choose an export preset.');
+    if (enhance.options(req.body.enhance).enabled) {
+      const plan = enhance.plan(probe, preset, req.body.enhance, req.body.preview);
+      return res.json({ strategy: { reencode: true, reencodeVideo: true, reason: plan.reason }, enhancement: plan,
+        output: { resolution: plan.width + 'x' + plan.height, fps: plan.fps, codec: plan.codec, color: plan.color } });
+    }
     const strategy = decideStrategy(probe, preset);
     const target = preset.target || {};
     const geometry = presets.geometry(probe.video, target);
@@ -235,7 +247,9 @@ async function startJob(inputPath, body, originalName, res) {
     const gpuInfo = await gpu.detectGpu(bins.ffmpegPath);
     const settings = store.getSettings();
     const useGpu = settings.preferGpu !== false && adv.encoder !== 'cpu';
-    const strategy = decideStrategy(before, presetDef, adv);
+    const aiPlan = enhance.options(adv.enhance).enabled ? enhance.plan(before, presetDef, adv.enhance, adv.preview) : null;
+    if (adv.preview && !aiPlan) throw new Error('Enable an enhancement before exporting an AI sample.');
+    const strategy = aiPlan ? { reencode: true, reencodeVideo: true, reencodeAudio: true, reason: aiPlan.reason } : decideStrategy(before, presetDef, adv);
     const advPreview = Object.assign({}, adv, presetDef.target ? { target: presetDef.target } : {}, { gpu: useGpu ? gpuInfo : null });
     const argsPreview = buildArgs({
       input: inputPath,
@@ -253,7 +267,8 @@ async function startJob(inputPath, body, originalName, res) {
       sourceName: originalName || before.file.name,
       presetId: presetDef.id,
       adv,
-      sourcePath: inputPath
+      sourcePath: inputPath,
+      keepInput: !!adv.preview
     });
 
     res.json({

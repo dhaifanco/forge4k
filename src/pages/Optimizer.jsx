@@ -9,6 +9,12 @@ export default function Optimizer() {
   const [phase, setPhase] = React.useState('idle'), [error, setError] = React.useState('');
   const [plan, setPlan] = React.useState(null), [planError, setPlanError] = React.useState('');
   const [encoder, setEncoder] = React.useState('auto'), [previewError, setPreviewError] = React.useState(false);
+  const [enhance, setEnhance] = React.useState({ scale: 1, fps: 0, denoise: 'off' }), [engines, setEngines] = React.useState(null), [sampleId, setSampleId] = React.useState(null);
+  const aiEnabled = enhance.scale > 1 || enhance.fps > 0 || enhance.denoise !== 'off';
+  const sampleBusy = !!sampleId && !['completed', 'failed', 'cancelled'].includes(queue.find(j => j.id === sampleId)?.state);
+  React.useEffect(() => {
+    if (sampleId && queue.some(j => j.id === sampleId && ['completed', 'failed', 'cancelled'].includes(j.state))) setSampleId(null);
+  }, [queue, sampleId]);
   const urls = React.useRef(new Set());
   const item = items.find(it => it.uploadId === selectedId) || items[0];
   const selectedPreset = presets.find(p => p.id === item?.preset);
@@ -16,6 +22,7 @@ export default function Optimizer() {
     api.presets().then(d => setPresets(d.presets)).catch(e => setError(e.message));
     api.settings().then(setSettings).catch(e => setError(e.message));
     api.gpu().then(d => setGpu(d.gpu)).catch(() => setGpu({ available: false }));
+    api.enhancement().then(setEngines).catch(e => setError(e.message));
     return () => { for (const url of urls.current) URL.revokeObjectURL(url); };
   }, []);
   React.useEffect(() => {
@@ -29,9 +36,9 @@ export default function Optimizer() {
   }, []);
   React.useEffect(() => {
     let stale = false; setPlan(null); setPlanError('');
-    if (item) api.plan(item.uploadId, item.preset).then(d => { if (!stale) setPlan(d); }).catch(e => { if (!stale) setPlanError(e.message); });
+    if (item) api.plan(item.uploadId, item.preset, enhance).then(d => { if (!stale) setPlan(d); }).catch(e => { if (!stale) setPlanError(e.message); });
     return () => { stale = true; };
-  }, [item?.uploadId, item?.preset]);
+  }, [item?.uploadId, item?.preset, enhance]);
   React.useEffect(() => setPreviewError(false), [item?.uploadId]);
   async function onFiles(files) {
     if (files.length > 30) { setError('Add up to 30 videos at a time.'); return; }
@@ -56,12 +63,12 @@ export default function Optimizer() {
     setItems(prev => prev.filter(it => it.uploadId !== id));
   }
   function preset(value, all = false) { setItems(prev => prev.map(it => all || it.uploadId === item?.uploadId ? { ...it, preset: value } : it)); }
-  async function exportAll() {
-    if (phase !== 'idle' || !items.length) return;
+  async function exportAll(preview = false) {
+    if (phase !== 'idle' || !items.length || sampleBusy) return;
     setPhase('submitting'); setError('');
     const done = [], failures = [];
-    for (const source of items) {
-      try { await api.optimize(source.uploadId, source.preset, { encoder }); done.push(source.uploadId); }
+    for (const source of preview ? [item] : items) {
+      try { const result = await api.optimize(source.uploadId, source.preset, { encoder, enhance, preview }); if (preview) setSampleId(result.jobId); else done.push(source.uploadId); }
       catch (e) { failures.push(source.file.name + ': ' + e.message); }
     }
     for (const id of done) remove(id);
@@ -99,6 +106,14 @@ export default function Optimizer() {
             {[...new Set(presets.map(p => p.group))].map(group => <optgroup key={group} label={group}>{presets.filter(p => p.group === group).map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</optgroup>)}
           </select><p className="field-help">{selectedPreset?.description || 'TikTok and Reels presets prepare a platform-ready file. Master presets keep more of your source.'}</p>
           {items.length > 1 && <button className="text-button" onClick={() => preset(item.preset, true)}>Apply this preset to all {items.length} videos</button>}
+          <details className="enhancement-controls"><summary>Enhance camera footage <Badge kind="info">{aiEnabled ? 'On' : 'Off'}</Badge></summary><p className="field-help">Local processing for real footage. Settings apply to all source files.</p>
+            <label className="field-label" htmlFor="ai-scale">AI detail and upscale</label><select id="ai-scale" value={enhance.scale} onChange={e => setEnhance(v => ({ ...v, scale: Number(e.target.value) }))}><option value="1">Off · keep original detail</option><option value="2" disabled={!engines?.upscale}>2× · Real-ESRGAN</option><option value="4" disabled={!engines?.upscale}>4× · Real-ESRGAN</option></select>
+            <p className="field-help">Fits your export preset, up to 4K. AI can alter skin and fine details; check a sample first.</p>
+            <label className="field-label" htmlFor="ai-fps">AI motion interpolation</label><select id="ai-fps" value={enhance.fps} onChange={e => setEnhance(v => ({ ...v, fps: Number(e.target.value) }))}><option value="0">Keep source motion</option><option value="60" disabled={!engines?.interpolate}>60 fps · RIFE</option><option value="120" disabled={!engines?.interpolate}>120 fps · RIFE, Master preset</option></select>
+            <p className="field-help">Creates intermediate frames. Fast movement and scene cuts may produce artifacts.</p>
+            <label className="field-label" htmlFor="ai-noise">Noise reduction</label><select id="ai-noise" value={enhance.denoise} onChange={e => setEnhance(v => ({ ...v, denoise: e.target.value }))}><option value="off">Off</option><option value="gentle">Gentle · temporal filter, not AI</option></select>
+            <p className="field-help">Enhancement outputs SDR. Requires a compatible Vulkan GPU for AI detail; CPU export selection controls encoding only.</p>
+          </details>
           <div className="plan-heading"><span className="step-number">02</span><h3>Before you export</h3></div>
           {item ? <><ErrorBar>{planError}</ErrorBar>{!plan && !planError ? <p role="status" className="muted">Calculating export…</p> : plan && <>
             <table className="plan-table"><thead><tr><th>Spec</th><th>Source</th><th>Export</th></tr></thead><tbody>
@@ -107,7 +122,8 @@ export default function Optimizer() {
           </>}</> : <div className="plan-empty"><Icon name="scan" size={24}/><p>Source and export specs will appear here.</p></div>}
           <label className="field-label" htmlFor="encoder">Processing</label><select id="encoder" value={encoder} onChange={e => setEncoder(e.target.value)}><option value="auto">Automatic · GPU when enabled</option><option value="cpu">CPU · software encoding</option></select>
           <div className="destination"><Icon name="folder"/><div><span>Save to</span><strong title={settings?.outDir}>{settings?.outDir || 'Loading output folder'}</strong></div></div>
-          <button className="btn primary export-button" disabled={!items.length || phase !== 'idle' || !plan || !!planError} onClick={exportAll}><Icon name="download"/>{phase === 'submitting' ? 'Adding to queue…' : `Export ${items.length || ''} ${items.length === 1 ? 'video' : 'videos'}`}</button>
+          {aiEnabled && <><button className="btn sample-button" disabled={!item || phase !== 'idle' || sampleBusy || !plan || !!planError} onClick={() => exportAll(true)}>{sampleBusy ? 'Rendering sample…' : 'Export 5-second sample'}</button><p className="field-help">Sample appears in the queue. Full export may need about {plan?.enhancement ? Math.ceil(plan.enhancement.scratchBytes / 1024 ** 3) + ' GB' : 'additional space'} of temporary disk space.</p></>}
+          <button className="btn primary export-button" disabled={!items.length || phase !== 'idle' || sampleBusy || !plan || !!planError} onClick={() => exportAll(false)}><Icon name="download"/>{phase === 'submitting' ? 'Adding to queue…' : `Export ${items.length || ''} ${items.length === 1 ? 'video' : 'videos'}`}</button>
           <p className="export-note">Platforms apply their own compression. A 4K120 master does not guarantee 4K120 playback online.</p>
         </div>
       </aside>
@@ -123,7 +139,7 @@ export default function Optimizer() {
 function QueueRow({ job, action }) {
   const busy = ['waiting', 'processing'].includes(job.state);
   const kind = job.state === 'completed' ? 'good' : job.state === 'failed' ? 'bad' : job.state === 'cancelled' ? 'warn' : 'info';
-  const label = job.state === 'processing' && job.phase === 'validating' ? 'Checking output' : { waiting: 'Queued', processing: 'Exporting', completed: 'Complete', failed: 'Failed', cancelled: 'Cancelled' }[job.state];
+  const label = job.state === 'processing' && job.phase ? (job.phase === 'validating' ? 'Checking output' : job.phase) : { waiting: 'Queued', processing: 'Exporting', completed: 'Complete', failed: 'Failed', cancelled: 'Cancelled' }[job.state];
   return <div className="queue-row"><div className="queue-row-top"><span className="queue-file-icon"><Icon name={job.state === 'completed' ? 'check' : 'film'}/></span><div className="queue-identity"><strong>{job.sourceName}</strong><span>{job.presetName || 'Preparing export'}{job.accel ? ' · ' + job.accel.toLowerCase() : ''}</span></div><Badge kind={kind}>{label}</Badge>
     <div className="btn-row">{busy ? <button className="btn small-btn" onClick={() => action(() => api.queueCancel(job.id))}>Cancel</button> : <>
       {['failed', 'cancelled'].includes(job.state) && <button className="btn small-btn" onClick={() => action(async () => { const d = await api.queueRetry(job.id); if (!['waiting', 'processing'].includes(d.job?.state)) throw new Error(d.job?.error || 'Cannot retry'); })}>Retry</button>}
@@ -133,6 +149,7 @@ function QueueRow({ job, action }) {
     {job.state === 'processing' && <div className="queue-progress"><progress aria-label={'Export progress for ' + job.sourceName} max="100" value={job.phase === 'validating' ? undefined : job.progress?.pct ?? undefined}/><span>{job.phase === 'validating' ? 'Decoding the output to check for errors' : job.progress?.pct != null ? `${Math.round(job.progress.pct)}% · ${job.progress.speed || 'Calculating speed'}` : 'Preparing media'}</span></div>}
     {job.error && <ErrorBar>{job.error}</ErrorBar>}
     {job.result && <p className="completed-specs">{job.result.afterSpecs?.video.resolution} · {job.result.afterSpecs?.video.fps} fps · {job.result.output.size?.human} · Decode check passed</p>}
+    {job.result?.preview && <div className="sample-preview"><p className="field-help">Enhanced sample. Compare with your source monitor above.</p><video controls preload="metadata" src={'/api/queue/' + encodeURIComponent(job.id) + '/video'} aria-label={'Enhanced sample of ' + job.sourceName}/></div>}
     {!!job.logLines?.length && <LogViewer lines={job.logLines}/>}
   </div>;
 }

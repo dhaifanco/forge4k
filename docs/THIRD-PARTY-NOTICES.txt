@@ -1,4 +1,9 @@
 Forge uses Electron, React, Express, FFmpeg and their dependencies.
+AI detail enhancement uses Real-ESRGAN ncnn Vulkan, official Windows release 20220424 (Real-ESRGAN v0.2.5.0), with the realesrgan-x4plus model.
+Source: https://github.com/xinntao/Real-ESRGAN-ncnn-vulkan and https://github.com/xinntao/Real-ESRGAN
+Frame interpolation uses RIFE ncnn Vulkan, official Windows release 20221029, with the rife-v4.6 model.
+Source: https://github.com/nihui/rife-ncnn-vulkan
+Upstream engine licenses and readmes are included under resources/bin/ai. No Topaz models or software are included.
 Electron license and Chromium third-party notices are included in the application distribution.
 FFmpeg executables in this local build come from the installed Gyan FFmpeg 9.0.1 full build.
 The accompanying FFmpeg LICENSE and README files are included under resources/bin.
