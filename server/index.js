@@ -9,6 +9,7 @@ const store = require('./store');
 const ff = require('./ffmpeg');
 const gpu = require('./gpu');
 const enhance = require('./enhance');
+const studio = require('./studio');
 const presets = require('./presets');
 const queue = require('./queue');
 const { listPresets, decideStrategy, buildArgs, PRESETS, recommendPreset, pickEncoder } = presets;
@@ -41,6 +42,34 @@ for (const action of ['check', 'download', 'cancelDownload', 'importFile', 'inst
   });
 }
 app.get('/api/enhancement', (_req, res) => res.json(enhance.status()));
+app.get('/api/recipes',(_req,res)=>res.json({items:studio.recipes()}));
+route('post','/api/recipes',(req,res)=>res.json({items:studio.saveRecipe(req.body)}));
+route('delete','/api/recipes/:name',(req,res)=>res.json({items:studio.deleteRecipe(req.params.name)}));
+function stagedPath(id) {
+  if(!/^[a-f0-9]{32}(\.[a-z0-9]+)?$/.test(id||''))throw new Error('Import a source video first.');
+  const file=path.join(store.UPLOADS_DIR,id);if(!fs.existsSync(file))throw new Error('Source is no longer staged.');return file;
+}
+route('post','/api/smart',async(req,res)=>{
+  const file=stagedPath(req.body.uploadId),raw=await ff.probe(file);
+  if(!raw.ok)throw new Error('Could not read source.');
+  res.json(await studio.smart(file,ff.normalizeProbe(raw.data,file)));
+});
+route('get','/api/uploads/:id/video',(req,res)=>res.sendFile(path.resolve(stagedPath(req.params.id))));
+route('post','/api/queue/:id/pause',(req,res)=>res.json({ok:studio && queue.pause(req.params.id)}));
+route('post','/api/queue/:id/resume',(req,res)=>res.json({ok:queue.resume(req.params.id)}));
+route('post','/api/queue/:id/compression',async(req,res)=>{
+  const job=queue.getJob(req.params.id);
+  if(job?.state!=='completed'||!job.result?.preview)throw new Error('Render a sample first.');
+  if(job.compressionBusy)return res.status(409).json({error:'Compression preview is already rendering.'});
+  job.compressionBusy=true;
+  try{
+    const bins=await ff.locateBinaries(),output=job.result.output.path+'.compression.mp4';
+    const result=await ff.runBin(bins.ffmpegPath,['-hide_banner','-nostdin','-y','-i',job.result.output.path,'-t','5','-vf','scale=w=720:h=1280:force_original_aspect_ratio=decrease:force_divisible_by=2','-c:v','libx264','-crf','32','-maxrate','1500k','-bufsize','3000k','-c:a','aac','-b:a','96k','-movflags','+faststart',output],{timeoutMs:120000});
+    if(result.code!==0)throw new Error('Could not render compression preview.');
+    job.compressionPath=output;res.json({url:'/api/queue/'+job.id+'/compression'});
+  }finally{job.compressionBusy=false;}
+});
+route('get','/api/queue/:id/compression',(req,res)=>{const job=queue.getJob(req.params.id);if(!job?.compressionPath||!fs.existsSync(job.compressionPath))return res.status(404).json({error:'Preview not found.'});res.sendFile(path.resolve(job.compressionPath));});
 app.delete('/api/uploads/:id', (req,res) => {
   const id=req.params.id;
   if(!/^[a-f0-9]{32}(\.[a-z0-9]+)?$/.test(id)) return res.status(400).json({error:'Invalid staged video.'});
@@ -52,7 +81,7 @@ app.delete('/api/uploads/:id', (req,res) => {
 });
 app.get('/api/queue/:id/video', (req, res) => {
   const job = queue.getJob(req.params.id);
-  if (job?.state !== 'completed' || !job.result?.preview || !fs.existsSync(job.result.output.path)) return res.status(404).json({ error: 'Completed sample not found.' });
+  if (job?.state !== 'completed' || !job.result?.output || !fs.existsSync(job.result.output.path)) return res.status(404).json({ error: 'Completed video not found.' });
   res.sendFile(path.resolve(job.result.output.path));
 });
 route('post', '/api/plan', async (req, res) => {
@@ -70,7 +99,7 @@ route('post', '/api/plan', async (req, res) => {
       return res.json({ strategy: { reencode: true, reencodeVideo: true, reason: plan.reason }, enhancement: plan,
         output: { resolution: plan.width + 'x' + plan.height, fps: plan.fps, codec: plan.codec, color: plan.color } });
     }
-    const strategy = decideStrategy(probe, preset);
+    const strategy = preset.mode==='remux'?decideStrategy(probe,preset):{reencode:true,reencodeVideo:true,reencodeAudio:true,reason:'Encode independently playable sections for resumable export.'};
     const target = preset.target || {};
     const geometry = presets.geometry(probe.video, target);
     const copy = !strategy.reencodeVideo;
@@ -226,7 +255,7 @@ route('post', '/api/analyze-path', async (req, res) => {
 // Two entry points: /api/optimize (multipart upload) and /api/optimize-id (reuse analyze temp file).
 route('post', '/api/optimize', upload.single('file'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'No file received' });
-  startJob(req.file.path, req.body || {}, req.file.originalname || null, res);
+  await startJob(req.file.path, req.body || {}, req.file.originalname || null, res);
 });
 
 route('post', '/api/optimize-id', async (req, res) => {
@@ -235,7 +264,7 @@ route('post', '/api/optimize-id', async (req, res) => {
   if (!/^[a-f0-9]{32}(\.[a-z0-9]+)?$/.test(id)) return res.status(400).json({error:'Import a source video first.'});
   const inputPath = path.join(store.UPLOADS_DIR, path.basename(id));
   if (!id || !fs.existsSync(inputPath)) return res.status(400).json({ error: 'Analyzed file no longer staged — drop the file again.' });
-  startJob(inputPath, body, uploads.get(id), res);
+  await startJob(inputPath, body, uploads.get(id), res);
 });
 
 async function startJob(inputPath, body, originalName, res) {
@@ -264,8 +293,8 @@ async function startJob(inputPath, body, originalName, res) {
     const settings = store.getSettings();
     const useGpu = settings.preferGpu !== false && adv.encoder !== 'cpu';
     const aiPlan = enhance.options(adv.enhance).enabled ? enhance.plan(before, presetDef, adv.enhance, adv.preview) : null;
-    if (adv.preview && !aiPlan) throw new Error('Enable an enhancement before exporting an AI sample.');
-    const strategy = aiPlan ? { reencode: true, reencodeVideo: true, reencodeAudio: true, reason: aiPlan.reason } : decideStrategy(before, presetDef, adv);
+    if (adv.preview && presetId==='remux') throw new Error('Choose a social or master preset to render a sample.');
+    const strategy = aiPlan ? { reencode: true, reencodeVideo: true, reencodeAudio: true, reason: aiPlan.reason } : presetDef.mode==='remux'?decideStrategy(before,presetDef,adv):{reencode:true,reencodeVideo:true,reencodeAudio:true,reason:'Encode independently playable sections for resumable export.'};
     const advPreview = Object.assign({}, adv, presetDef.target ? { target: presetDef.target } : {}, { gpu: useGpu ? gpuInfo : null });
     const argsPreview = buildArgs({
       input: inputPath,
@@ -284,7 +313,7 @@ async function startJob(inputPath, body, originalName, res) {
       presetId: presetDef.id,
       adv,
       sourcePath: inputPath,
-      keepInput: !!adv.preview
+      keepInput: !!adv.preview || !!adv.keepSource
     });
 
     res.json({

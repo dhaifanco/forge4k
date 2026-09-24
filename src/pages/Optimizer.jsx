@@ -1,161 +1,96 @@
 import React from 'react';
-import { api, fmtBytes, fmtDur } from '../api';
+import { api, fmtDur } from '../api';
 import { Card, Badge, DropZone, ErrorBar, Icon, LogViewer } from '../ui.jsx';
-
-export default function Optimizer() {
-  const [items, setItems] = React.useState([]), [selectedId, select] = React.useState(null);
-  const [presets, setPresets] = React.useState([]), [queue, setQueue] = React.useState([]);
-  const [gpu, setGpu] = React.useState(null), [settings, setSettings] = React.useState(null);
-  const [phase, setPhase] = React.useState('idle'), [error, setError] = React.useState('');
-  const [plan, setPlan] = React.useState(null), [planError, setPlanError] = React.useState('');
-  const [encoder, setEncoder] = React.useState('auto'), [previewError, setPreviewError] = React.useState(false);
-  const [enhance, setEnhance] = React.useState({ scale: 1, fps: 0, denoise: 'off' }), [engines, setEngines] = React.useState(null), [sampleId, setSampleId] = React.useState(null);
-  const aiEnabled = enhance.scale > 1 || enhance.fps > 0 || enhance.denoise !== 'off';
-  const sampleBusy = !!sampleId && !['completed', 'failed', 'cancelled'].includes(queue.find(j => j.id === sampleId)?.state);
-  React.useEffect(() => {
-    if (sampleId && queue.some(j => j.id === sampleId && ['completed', 'failed', 'cancelled'].includes(j.state))) setSampleId(null);
-  }, [queue, sampleId]);
-  const urls = React.useRef(new Set());
-  const staged = React.useRef(new Set());
-  const mounted = React.useRef(true);
-  const item = items.find(it => it.uploadId === selectedId) || items[0];
-  const selectedPreset = presets.find(p => p.id === item?.preset);
-  React.useEffect(() => {
-    api.presets().then(d => setPresets(d.presets)).catch(e => setError(e.message));
-    api.settings().then(setSettings).catch(e => setError(e.message));
-    api.gpu().then(d => setGpu(d.gpu)).catch(() => setGpu({ available: false }));
-    api.enhancement().then(setEngines).catch(e => setError(e.message));
-    mounted.current = true;
-    return () => { mounted.current = false; for (const url of urls.current) URL.revokeObjectURL(url); for (const id of staged.current) api.releaseUpload(id).catch(() => {}); };
-  }, []);
-  React.useEffect(() => {
-    let stopped = false, timer;
-    async function poll() {
-      try { const d = await api.queue(); if (!stopped) setQueue(d.items); }
-      catch (e) { if (!stopped) setError(e.message); }
-      if (!stopped) timer = setTimeout(poll, 1200);
-    }
-    poll(); return () => { stopped = true; clearTimeout(timer); };
-  }, []);
-  React.useEffect(() => {
-    let stale = false; setPlan(null); setPlanError('');
-    if (item) api.plan(item.uploadId, item.preset, enhance).then(d => { if (!stale) setPlan(d); }).catch(e => { if (!stale) setPlanError(e.message); });
-    return () => { stale = true; };
-  }, [item?.uploadId, item?.preset, enhance]);
-  React.useEffect(() => setPreviewError(false), [item?.uploadId]);
-  async function onFiles(files) {
-    if (files.length > 30) { setError('Add up to 30 videos at a time.'); return; }
-    setPhase('analyzing'); setError('');
-    try {
-      const d = await api.analyzeBatch(files);
-      if (!mounted.current) { for (const it of d.items) if(it.uploadId) api.releaseUpload(it.uploadId).catch(() => {}); return; }
-      const added = [], failed = [];
-      d.items.forEach((it, index) => {
-        if (!it.uploadId) { failed.push(it.name + ': ' + it.error); return; }
-        const url = URL.createObjectURL(files[index]); urls.current.add(url);
-        staged.current.add(it.uploadId);
-        added.push({ ...it, url, preset: it.recommendation?.presetId || 'tiktok_1080p60' });
-      });
-      setItems(prev => [...prev, ...added]);
-      if (added.length) select(added[0].uploadId);
-      setError(failed.join(' '));
-    } catch (e) { setError(e.message); }
-    finally { setPhase('idle'); }
+const defaults={scale:1,fps:0,denoise:'off',face:0,crop:'off',cropX:.5,cropY:.5,stabilize:0,motionGuard:'cuts'};
+export default function Optimizer(){
+  const [items,setItems]=React.useState([]),[selectedId,select]=React.useState(null);
+  const [presets,setPresets]=React.useState([]),[queue,setQueue]=React.useState([]),[recipes,setRecipes]=React.useState([]);
+  const [gpu,setGpu]=React.useState(null),[settings,setSettings]=React.useState(null),[engines,setEngines]=React.useState({});
+  const [phase,setPhase]=React.useState('idle'),[error,setError]=React.useState(''),[notice,setNotice]=React.useState('');
+  const [plan,setPlan]=React.useState(null),[planError,setPlanError]=React.useState('');
+  const [encoder,setEncoder]=React.useState('auto'),[enhance,setEnhance]=React.useState(defaults),[tab,setTab]=React.useState('Setup');
+  const [sampleId,setSampleId]=React.useState(null),[samples,setSamples]=React.useState({}),[sampleStart,setSampleStart]=React.useState(0);
+  const [recipeName,setRecipeName]=React.useState(''),[recipe,setRecipe]=React.useState(''),[variants,setVariants]=React.useState([]);
+  const [compare,setCompare]=React.useState(false),[compressed,setCompressed]=React.useState('');
+  const urls=React.useRef(new Set()),staged=React.useRef(new Set()),mounted=React.useRef(true);
+  const item=items.find(it=>it.uploadId===selectedId)||items[0],sample=queue.find(j=>j.id===samples[item?.uploadId]&&j.state==='completed');
+  const sampleBusy=!!sampleId&&!['completed','failed','cancelled'].includes(queue.find(j=>j.id===sampleId)?.state);
+  const active=queue.filter(j=>['waiting','processing'].includes(j.state));
+  React.useEffect(()=>{if(sampleId&&queue.some(j=>j.id===sampleId&&['completed','failed','cancelled'].includes(j.state)))setSampleId(null);},[queue,sampleId]);
+  React.useEffect(()=>{
+    Promise.all([api.presets(),api.settings(),api.gpu(),api.enhancement(),api.recipes()]).then(([p,s,g,e,r])=>{setPresets(p.presets);setSettings(s);setGpu(g.gpu);setEngines(e);setRecipes(r.items);}).catch(e=>setError(e.message));
+    mounted.current=true;return()=>{mounted.current=false;for(const url of urls.current)URL.revokeObjectURL(url);for(const id of staged.current)api.releaseUpload(id).catch(()=>{});};
+  },[]);
+  React.useEffect(()=>{let stopped=false,timer;async function poll(){try{const d=await api.queue();if(!stopped)setQueue(d.items);}catch(e){if(!stopped)setError(e.message);}if(!stopped)timer=setTimeout(poll,1200);}poll();return()=>{stopped=true;clearTimeout(timer);};},[]);
+  React.useEffect(()=>{let stale=false;setPlan(null);setPlanError('');if(item)api.plan(item.uploadId,item.preset,enhance).then(d=>{if(!stale)setPlan(d);}).catch(e=>{if(!stale)setPlanError(e.message);});return()=>{stale=true;};},[item?.uploadId,item?.preset,enhance]);
+  React.useEffect(()=>{setCompare(false);setCompressed('');setSampleStart(0);},[item?.uploadId]);
+  function change(key,value){setEnhance(v=>({...v,[key]:value}));}
+  async function onFiles(files){
+    if(files.length+items.length>30){setError('Keep up to 30 source videos in the workspace.');return;}setPhase('analyzing');setError('');
+    try{const d=await api.analyzeBatch(files);if(!mounted.current){for(const it of d.items)if(it.uploadId)api.releaseUpload(it.uploadId).catch(()=>{});return;}
+      const added=[],failed=[];d.items.forEach((it,i)=>{if(!it.uploadId){failed.push(it.name+': '+it.error);return;}const url=URL.createObjectURL(files[i]);urls.current.add(url);staged.current.add(it.uploadId);added.push({...it,url,preset:it.recommendation?.presetId||'tiktok_1080p60'});});setItems(prev=>[...prev,...added]);if(added.length)select(added[0].uploadId);setError(failed.join(' '));
+    }catch(e){setError(e.message);}finally{setPhase('idle');}
   }
-  function remove(id) {
-    const source = items.find(it => it.uploadId === id);
-    if (source) { URL.revokeObjectURL(source.url); urls.current.delete(source.url); }
-    setItems(prev => prev.filter(it => it.uploadId !== id));
-    staged.current.delete(id); api.releaseUpload(id).catch(e => setError(e.message));
+  function remove(id){const source=items.find(it=>it.uploadId===id);if(source){URL.revokeObjectURL(source.url);urls.current.delete(source.url);}setItems(prev=>prev.filter(it=>it.uploadId!==id));staged.current.delete(id);api.releaseUpload(id).catch(e=>setError(e.message));}
+  function preset(value,all=false){setItems(prev=>prev.map(it=>all||it.uploadId===item?.uploadId?{...it,preset:value}:it));}
+  async function action(fn){try{setError('');await fn();setQueue((await api.queue()).items);}catch(e){setError(e.message);}}
+  async function smart(){if(!item)return;setPhase('smart');try{const d=await api.smart(item.uploadId);setEnhance(d.enhance);preset(d.preset);setNotice(d.reasons.join(' '));}catch(e){setError(e.message);}finally{setPhase('idle');}}
+  async function exportAll(preview=false){
+    if(phase!=='idle'||!items.length||sampleBusy)return;setPhase('submitting');setError('');const done=[],failed=[];
+    try{for(const source of preview?[item]:items){let success=true;const targets=preview?[source.preset]:Array.from(new Set([source.preset,...variants]));
+      for(const target of targets){try{await api.plan(source.uploadId,target,enhance);}catch(e){failed.push(source.file.name+': '+e.message);success=false;}}if(!success)continue;
+      for(const target of targets){try{const d=await api.optimize(source.uploadId,target,{encoder,enhance,preview,sampleStart,keepSource:targets.length>1});if(preview){setSampleId(d.jobId);setSamples(v=>({...v,[source.uploadId]:d.jobId}));setCompare(false);setCompressed('');}}catch(e){success=false;failed.push(source.file.name+': '+e.message);}}
+      if(!preview&&success)done.push(source.uploadId);
+    }for(const id of done)remove(id);setError(failed.join(' '));setQueue((await api.queue()).items);}catch(e){setError(e.message);}finally{setPhase('idle');}
   }
-  function preset(value, all = false) { setItems(prev => prev.map(it => all || it.uploadId === item?.uploadId ? { ...it, preset: value } : it)); }
-  async function exportAll(preview = false) {
-    if (phase !== 'idle' || !items.length || sampleBusy) return;
-    setPhase('submitting'); setError('');
-    const done = [], failures = [];
-    for (const source of preview ? [item] : items) {
-      try { const result = await api.optimize(source.uploadId, source.preset, { encoder, enhance, preview }); if (preview) setSampleId(result.jobId); else done.push(source.uploadId); }
-      catch (e) { failures.push(source.file.name + ': ' + e.message); }
-    }
-    for (const id of done) remove(id);
-    setError(failures.join(' ')); setPhase('idle');
-    api.queue().then(d => setQueue(d.items)).catch(e => setError(e.message));
-  }
-  async function action(fn) { try { await fn(); setQueue((await api.queue()).items); } catch (e) { setError(e.message); } }
-  const active = queue.filter(j => ['waiting', 'processing'].includes(j.state));
-  return <div className="page workspace">
-    <header className="page-head"><div><div className="eyebrow">Create. Prepare. Publish.</div><h1>Video workspace</h1><p className="page-sub">A clean export starts with a good source.</p></div><div className="header-meta"><Icon name="chip"/><span>{gpu ? gpu.available && (gpu.nvenc?.h264 || gpu.nvenc?.hevc) ? gpu.name : 'CPU processing' : 'Checking hardware'}</span></div></header>
-    <ErrorBar>{error}</ErrorBar>
-    <div className="workspace-grid">
-      <div className="media-column">
-        <section className="monitor" aria-label="Source preview">
-          <div className="monitor-top"><span><Icon name="film" size={16}/> Source monitor</span><span>{item ? item.video.resolution + ' · ' + item.video.fps + ' fps' : 'No source selected'}</span></div>
-          <div className={'monitor-stage' + (!item ? ' is-empty' : '')}>
-            {phase === 'analyzing' ? <div className="loading-state" role="status"><span className="spinner"/><strong>Inspecting your videos</strong><span>Reading resolution, frame rate and color.</span></div> : item ? <>
-              <video key={item.uploadId} src={item.url} controls preload="metadata" onError={() => setPreviewError(true)} aria-label={'Preview ' + item.file.name}/>
-              {previewError && <p className="preview-note">This codec cannot be previewed here. The export engine can still process it.</p>}
-            </> : <DropZone multiple onFiles={onFiles}/>}
-          </div>
-          <div className="monitor-bottom"><span className="truncate">{item ? item.file.name : 'Original footage. No cloud upload.'}</span><span>{item ? fmtDur(item.format.durationSec) : 'Local preview'}</span></div>
-        </section>
-        <section className="source-section"><div className="section-heading"><h2>Source files <span className="count">{items.length}</span></h2><DropZone multiple compact onFiles={onFiles} busy={phase !== 'idle'}/></div>
-          {items.length ? <div className="source-list">{items.map(it => <div key={it.uploadId} className={'source-row' + (it.uploadId === item?.uploadId ? ' selected' : '')}>
-            <button className="source-select" onClick={() => select(it.uploadId)} aria-pressed={it.uploadId === item?.uploadId}><span className="source-frame"><Icon name="film"/></span><span className="source-info"><strong>{it.file.name}</strong><span>{it.video.resolution} · {it.video.fps} fps · {it.file.size?.human}</span></span><span className="source-preset">{presets.find(p => p.id === it.preset)?.name}</span></button>
-            <button className="icon-button" onClick={() => remove(it.uploadId)} aria-label={'Remove ' + it.file.name}><Icon name="close" size={16}/></button>
-          </div>)}</div> : <p className="empty-inline">Add a video to inspect its specs and choose an export.</p>}
-        </section>
-      </div>
-      <aside className="inspector" aria-label="Export settings">
-        <div className="inspector-heading"><span className="step-number">01</span><div><h2>Export setup</h2><p>Choose the destination, keep the detail.</p></div></div>
-        <div className="inspector-body">
-          <label className="field-label" htmlFor="export-preset">Export preset</label><select id="export-preset" value={item?.preset || 'tiktok_1080p60'} disabled={!item} onChange={e => preset(e.target.value)}>
-            {[...new Set(presets.map(p => p.group))].map(group => <optgroup key={group} label={group}>{presets.filter(p => p.group === group).map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</optgroup>)}
-          </select><p className="field-help">{selectedPreset?.description || 'TikTok and Reels presets prepare a platform-ready file. Master presets keep more of your source.'}</p>
-          {items.length > 1 && <button className="text-button" onClick={() => preset(item.preset, true)}>Apply this preset to all {items.length} videos</button>}
-          <details className="enhancement-controls"><summary>Enhance camera footage <Badge kind="info">{aiEnabled ? 'On' : 'Off'}</Badge></summary><p className="field-help">Local processing for real footage. Settings apply to all source files.</p>
-            <label className="field-label" htmlFor="ai-scale">AI detail and upscale</label><select id="ai-scale" value={enhance.scale} onChange={e => setEnhance(v => ({ ...v, scale: Number(e.target.value) }))}><option value="1">Off · keep original detail</option><option value="2" disabled={!engines?.upscale}>2× · Real-ESRGAN</option><option value="4" disabled={!engines?.upscale}>4× · Real-ESRGAN</option></select>
-            <p className="field-help">Fits your export preset, up to 4K. AI can alter skin and fine details; check a sample first.</p>
-            <label className="field-label" htmlFor="ai-fps">AI motion interpolation</label><select id="ai-fps" value={enhance.fps} onChange={e => setEnhance(v => ({ ...v, fps: Number(e.target.value) }))}><option value="0">Keep source motion</option><option value="60" disabled={!engines?.interpolate}>60 fps · RIFE</option><option value="120" disabled={!engines?.interpolate}>120 fps · RIFE, Master preset</option></select>
-            <p className="field-help">Creates intermediate frames. Fast movement and scene cuts may produce artifacts.</p>
-            <label className="field-label" htmlFor="ai-noise">Noise reduction</label><select id="ai-noise" value={enhance.denoise} onChange={e => setEnhance(v => ({ ...v, denoise: e.target.value }))}><option value="off">Off</option><option value="gentle">Gentle · temporal filter, not AI</option></select>
-            <p className="field-help">Enhancement outputs SDR. Requires a compatible Vulkan GPU for AI detail; CPU export selection controls encoding only.</p>
-          </details>
-          <div className="plan-heading"><span className="step-number">02</span><h3>Before you export</h3></div>
-          {item ? <><ErrorBar>{planError}</ErrorBar>{!plan && !planError ? <p role="status" className="muted">Calculating export…</p> : plan && <>
-            <table className="plan-table"><thead><tr><th>Spec</th><th>Source</th><th>Export</th></tr></thead><tbody>
-              <tr><th>Size</th><td>{item.video.resolution}</td><td>{plan.output.resolution}</td></tr><tr><th>FPS</th><td>{item.video.fps}</td><td>{plan.output.fps}</td></tr><tr><th>Codec</th><td>{item.video.codec?.toUpperCase()}</td><td>{plan.output.codec?.toUpperCase()}</td></tr><tr><th>Color</th><td>{item.video.isHdr ? 'HDR' : 'SDR'}</td><td>{plan.output.color}</td></tr>
-            </tbody></table><p className="plan-reason"><Icon name="check" size={16}/><span>{plan.strategy.reason}</span></p>
-          </>}</> : <div className="plan-empty"><Icon name="scan" size={24}/><p>Source and export specs will appear here.</p></div>}
-          <label className="field-label" htmlFor="encoder">Processing</label><select id="encoder" value={encoder} onChange={e => setEncoder(e.target.value)}><option value="auto">Automatic · GPU when enabled</option><option value="cpu">CPU · software encoding</option></select>
-          <div className="destination"><Icon name="folder"/><div><span>Save to</span><strong title={settings?.outDir}>{settings?.outDir || 'Loading output folder'}</strong></div></div>
-          {aiEnabled && <><button className="btn sample-button" disabled={!item || phase !== 'idle' || sampleBusy || !plan || !!planError} onClick={() => exportAll(true)}>{sampleBusy ? 'Rendering sample…' : 'Export 5-second sample'}</button><p className="field-help">Sample appears in the queue. Full export may need about {plan?.enhancement ? Math.ceil(plan.enhancement.scratchBytes / 1024 ** 3) + ' GB' : 'additional space'} of temporary disk space.</p></>}
-          <button className="btn primary export-button" disabled={!items.length || phase !== 'idle' || sampleBusy || !plan || !!planError} onClick={() => exportAll(false)}><Icon name="download"/>{phase === 'submitting' ? 'Adding to queue…' : `Export ${items.length || ''} ${items.length === 1 ? 'video' : 'videos'}`}</button>
-          <p className="export-note">Platforms apply their own compression. A 4K120 master does not guarantee 4K120 playback online.</p>
-        </div>
-      </aside>
-    </div>
-    <Card title="Export queue" right={<span className="muted small">{active.length ? active.length + ' in progress' : 'Ready when you are'}</span>} className="queue-card">
-      {!queue.length ? <div className="queue-empty"><Icon name="download"/><div><strong>Your exports will appear here</strong><p>Progress, results and retry controls in one place.</p></div></div> : <>
-        {queue.map(job => <QueueRow key={job.id} job={job} action={action}/>)}
-        {queue.some(j => !['waiting', 'processing'].includes(j.state)) && <div className="queue-footer"><button className="text-button" onClick={() => action(api.queueClearFinished)}>Clear finished jobs</button></div>}
-      </>}
-    </Card>
+  function loadRecipe(name){setRecipe(name);const r=recipes.find(r=>r.name===name);if(r){setEnhance({...defaults,...r.enhance});setEncoder(r.encoder);preset(r.preset,true);setNotice('Saved settings applied to every source.');}}
+  async function compression(){if(!sample)return;setPhase('compression');try{const d=await api.compression(sample.id);setCompressed(d.url+'?t='+Date.now());setCompare(true);}catch(e){setError(e.message);}finally{setPhase('idle');}}
+  return <div className="page workspace studio-workspace">
+    <header className="page-head"><div><div className="eyebrow">Your footage, finished with care.</div><h1>Video workspace</h1><p className="page-sub">Make a sample. Find the right balance. Export with confidence.</p></div><div className="header-meta"><Icon name="chip"/><span>{gpu?.available?gpu.name:gpu?'CPU encoding':'Checking hardware'}</span></div></header>
+    <div className="workflow" aria-label="Export workflow">{['Import','Enhance','Compare','Export'].map((s,i)=><span key={s} className={(i===0&&!item||i===1&&item&&!sample||i===2&&sample||i===3&&active.length)?'current':''}><b>{String(i+1).padStart(2,'0')}</b>{s}</span>)}</div>
+    <ErrorBar>{error}</ErrorBar>{notice&&<div className="studio-notice" role="status"><p>{notice}</p><button className="icon-button" onClick={()=>setNotice('')} aria-label="Dismiss notice"><Icon name="close"/></button></div>}
+    <div className="workspace-grid"><div className="media-column">
+      <section className="monitor" aria-label="Source preview"><div className="monitor-top"><span><Icon name="film" size={16}/>{compare?'Comparison monitor':'Source monitor'}</span><span>{item?item.video.resolution+' · '+item.video.fps+' fps':'Ready for your next video'}</span></div>
+        <div className={'monitor-stage'+(!item?' is-empty':'')}>{phase==='analyzing'?<div className="loading-state" role="status"><span className="spinner"/><strong>Getting your footage ready</strong></div>:item?compare&&sample?<Compare key={sample.id+compressed} source={item.url} result={compressed||'/api/queue/'+sample.id+'/video'} offset={sample.result.sampleStart||0} compressed={!!compressed}/>:<SourceVideo key={item.uploadId} item={item} crop={enhance.crop} stabilize={enhance.stabilize}/>:<div className="import-stage"><div className="frame-motif" aria-hidden="true"><span/><span/><span/></div><DropZone multiple onFiles={onFiles}/><p className="field-help">One clip or a whole batch. Processing stays on your PC.</p></div>}</div>
+        <div className="monitor-bottom"><span className="truncate">{item?item.file.name:'A little more detail. A little less guesswork.'}</span><span>{item?fmtDur(item.format.durationSec):'Local studio'}</span></div>
+      </section>
+      {item&&<div className="review-toolbar"><div className="segmented"><button aria-pressed={!compare} onClick={()=>setCompare(false)}>Original</button><button disabled={!sample} aria-pressed={compare&&!compressed} onClick={()=>{setCompare(true);setCompressed('');}}>Before / after</button></div><button className="btn" disabled={!sample||phase!=='idle'} onClick={compression}>{phase==='compression'?'Simulating…':'Compression preview'}</button></div>}
+      {compressed&&compare&&<p className="field-help">Heavy-compression simulation: 720p, H.264, up to 1.5 Mbps. Not a prediction of TikTok or Instagram output.</p>}
+      <section className="source-section"><div className="section-heading"><h2>Your footage <span className="count">{items.length}</span></h2><DropZone multiple compact onFiles={onFiles} busy={phase!=='idle'}/></div>{items.length?<div className="source-list">{items.map(it=><div key={it.uploadId} className={'source-row'+(it.uploadId===item?.uploadId?' selected':'')}><button className="source-select" onClick={()=>select(it.uploadId)} aria-pressed={it.uploadId===item?.uploadId}><span className="source-frame"><Icon name="film"/></span><span className="source-info"><strong>{it.file.name}</strong><span>{it.video.resolution} · {fmtDur(it.format.durationSec)} · {it.file.size?.human}</span></span><span className="source-preset">{presets.find(p=>p.id===it.preset)?.name}</span></button><button className="icon-button" onClick={()=>remove(it.uploadId)} aria-label={'Remove '+it.file.name}><Icon name="close" size={16}/></button></div>)}</div>:<p className="empty-inline">Your sources and their export destinations appear here.</p>}</section>
+      <Card title="Export queue" right={<span className="muted small">{active.length?active.length+' active':'All in your own time'}</span>} className="queue-card">{!queue.length?<div className="queue-empty"><Icon name="download"/><div><strong>Room for your next export</strong><p>Pause at a checkpoint and carry on when you are ready.</p></div></div>:<>{queue.map(job=><QueueRow key={job.id} job={job} action={action}/>)}{queue.some(j=>['completed','failed','cancelled'].includes(j.state))&&<div className="queue-footer"><button className="text-button" onClick={()=>action(api.queueClearFinished)}>Clear finished jobs</button></div>}</>}</Card>
+    </div><aside className="inspector" aria-label="Export settings"><div className="inspector-heading"><div><h2>Make it yours</h2><p>Small adjustments. Visible results.</p></div><button className="btn smart-button" disabled={!item||phase!=='idle'} onClick={smart}>{phase==='smart'?'Reading…':'Smart Auto'}</button></div>
+      <div className="inspector-tabs" role="tablist" aria-label="Editing controls">{['Setup','Detail','Framing'].map(t=><button key={t} role="tab" aria-selected={tab===t} aria-controls="studio-controls" onClick={()=>setTab(t)}>{t}</button>)}</div>
+      <div className="inspector-body"><div id="studio-controls" className="control-panel" key={tab} role="tabpanel" aria-label={tab}>
+        {tab==='Setup'&&<><Field label="Export preset" id="export-preset"><select id="export-preset" disabled={!item} value={item?.preset||'tiktok_1080p60'} onChange={e=>preset(e.target.value)}>{[...new Set(presets.map(p=>p.group))].map(group=><optgroup key={group} label={group}>{presets.filter(p=>p.group===group).map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</optgroup>)}</select></Field><p className="field-help">{presets.find(p=>p.id===item?.preset)?.description||'Choose a destination after adding your video.'}</p>{items.length>1&&<button className="text-button" onClick={()=>preset(item.preset,true)}>Apply destination to all videos</button>}
+          <Field label="Saved looks" id="saved-look"><select id="saved-look" value={recipe} onChange={e=>loadRecipe(e.target.value)}><option value="">Choose a saved preset</option>{recipes.map(r=><option key={r.name}>{r.name}</option>)}</select></Field><div className="recipe-form"><label className="sr-only" htmlFor="recipe-name">Preset name</label><input id="recipe-name" maxLength={60} placeholder="Name this look" value={recipeName} onChange={e=>setRecipeName(e.target.value)}/><button className="btn" disabled={!recipeName.trim()} onClick={()=>action(async()=>{const d=await api.saveRecipe({name:recipeName,preset:item?.preset||'tiktok_1080p60',enhance,encoder});setRecipes(d.items);setRecipe(recipeName.trim());setNotice('Preset saved on this PC.');})}>Save</button></div>{recipe&&<button className="text-button" onClick={()=>action(async()=>{setRecipes((await api.deleteRecipe(recipe)).items);setRecipe('');})}>Delete saved preset</button>}
+          <details className="enhancement-controls"><summary>Also export for…</summary><p className="field-help">Create additional files for every source.</p>{presets.filter(p=>['tiktok_1080p60','reels_hq','master_4k120'].includes(p.id)).map(p=><label key={p.id} className="check"><input type="checkbox" checked={variants.includes(p.id)} onChange={e=>setVariants(v=>e.target.checked?[...v,p.id]:v.filter(x=>x!==p.id))}/>{p.name}</label>)}</details>
+          <Field label="Processing" id="encoder"><select id="encoder" value={encoder} onChange={e=>setEncoder(e.target.value)}><option value="auto">Automatic · GPU when enabled</option><option value="cpu">CPU · software encoding</option></select></Field></>}
+        {tab==='Detail'&&<><p className="field-help">Applies to every source. Check a sample before a long export.</p><Field label="AI detail and upscale" id="ai-scale"><select id="ai-scale" value={enhance.scale} onChange={e=>change('scale',Number(e.target.value))}><option value="1">Keep original size</option><option value="2" disabled={!engines.upscale}>2× · Real-ESRGAN</option><option value="4" disabled={!engines.upscale}>4× · Real-ESRGAN</option></select></Field>
+          <Field label="Noise reduction" id="ai-noise"><select id="ai-noise" value={enhance.denoise} onChange={e=>change('denoise',e.target.value)}><option value="off">Off</option><option value="gentle">Gentle · temporal filter</option><option value="ai" disabled={!engines.denoise}>AI · low-light restoration</option></select></Field><p className="field-help">AI denoise runs on CPU and takes longer. It can smooth fine texture.</p>
+          <Field label={'Natural face blend · '+Math.round(enhance.face*100)+'%'} id="face-strength"><input id="face-strength" type="range" min="0" max="1" step=".05" disabled={!engines.face} value={enhance.face} onChange={e=>change('face',Number(e.target.value))}/></Field><p className="field-help">GFPGAN on frontal faces, blended with the original. Start low; generated details can change a face.</p>
+          <Field label="AI motion interpolation" id="ai-fps"><select id="ai-fps" value={enhance.fps} onChange={e=>change('fps',Number(e.target.value))}><option value="0">Keep source motion</option><option value="60" disabled={!engines.interpolate}>60 fps · RIFE</option><option value="120" disabled={!engines.interpolate}>120 fps · Master preset</option></select></Field>
+          <Field label="Motion protection" id="motion-guard"><select id="motion-guard" value={enhance.motionGuard} onChange={e=>change('motionGuard',e.target.value)}><option value="cuts">Protect scene cuts</option><option value="conservative">Cuts + fast-motion protection</option><option value="off">Off</option></select></Field><p className="field-help">Holds source frames at detected cuts or risky motion to reduce ghosting. Some artifacts may remain.</p></>}
+        {tab==='Framing'&&<><Field label="Portrait framing" id="crop-mode"><select id="crop-mode" value={enhance.crop} onChange={e=>change('crop',e.target.value)}><option value="off">Original composition</option><option value="center" disabled={!engines.tracking}>9:16 · center crop</option><option value="follow" disabled={!engines.tracking}>9:16 · follow largest visible face</option><option value="manual" disabled={!engines.tracking}>9:16 · manual position</option></select></Field><p className="field-help">Smoothed frontal-face tracking returns toward center when no face is found. Check framing in a sample.</p>{enhance.crop==='manual'&&<><Field label="Horizontal position" id="crop-x"><input id="crop-x" type="range" min="0" max="1" step=".01" value={enhance.cropX} onChange={e=>change('cropX',Number(e.target.value))}/></Field><Field label="Vertical position" id="crop-y"><input id="crop-y" type="range" min="0" max="1" step=".01" value={enhance.cropY} onChange={e=>change('cropY',Number(e.target.value))}/></Field></>}
+          <Field label="Stabilization" id="stabilize"><select id="stabilize" value={enhance.stabilize} onChange={e=>change('stabilize',Number(e.target.value))}><option value="0">Off</option><option value="5">Gentle · 5% crop per dimension</option><option value="10">Stronger border crop · 10%</option></select></Field><p className="field-help">Compensates for small camera shake and trims borders. Large movement and rolling shutter may remain.</p></>}
+      </div><div className="export-summary"><h3>Ready to render</h3><ErrorBar>{planError}</ErrorBar>{item?plan?<><table className="plan-table"><thead><tr><th>Spec</th><th>Source</th><th>Export</th></tr></thead><tbody><tr><th>Size</th><td>{item.video.resolution}</td><td>{plan.output.resolution}</td></tr><tr><th>FPS</th><td>{item.video.fps}</td><td>{plan.output.fps}</td></tr><tr><th>Color</th><td>{item.video.isHdr?'HDR':'SDR'}</td><td>{plan.output.color}</td></tr></tbody></table><p className="field-help">{plan.strategy.reason}</p></>:!planError&&<p role="status">Calculating export…</p>:<p className="field-help">Add footage to see your export specs.</p>}
+        <Field label={'Sample starts at '+fmtDur(sampleStart)} id="sample-start"><input id="sample-start" type="range" min="0" max={Math.max(0,(item?.format.durationSec||0)-5)} step=".1" value={sampleStart} disabled={!item} onChange={e=>setSampleStart(Number(e.target.value))}/></Field><button className="btn sample-button" disabled={!item||phase!=='idle'||sampleBusy||!plan||!!planError||item.preset==='remux'} onClick={()=>exportAll(true)}>{sampleBusy?'Rendering sample…':'Export 5-second sample'}</button>
+        <div className="destination"><Icon name="folder"/><div><span>Save to</span><strong title={settings?.outDir}>{settings?.outDir||'Loading destination'}</strong></div></div><button className="btn primary export-button" disabled={!items.length||phase!=='idle'||sampleBusy||!plan||!!planError} onClick={()=>exportAll()}><Icon name="download"/>{phase==='submitting'?'Adding to queue…':`Export ${items.length||''} ${items.length===1?'video':'videos'}`}</button><p className="export-note">Platforms recompress uploads. Higher resolution or FPS cannot guarantee sharper playback online.</p>
+      </div></div>
+    </aside></div>
   </div>;
 }
-function QueueRow({ job, action }) {
-  const busy = ['waiting', 'processing'].includes(job.state);
-  const kind = job.state === 'completed' ? 'good' : job.state === 'failed' ? 'bad' : job.state === 'cancelled' ? 'warn' : 'info';
-  const label = job.state === 'processing' && job.phase ? (job.phase === 'validating' ? 'Checking output' : job.phase) : { waiting: 'Queued', processing: 'Exporting', completed: 'Complete', failed: 'Failed', cancelled: 'Cancelled' }[job.state];
-  return <div className="queue-row"><div className="queue-row-top"><span className="queue-file-icon"><Icon name={job.state === 'completed' ? 'check' : 'film'}/></span><div className="queue-identity"><strong>{job.sourceName}</strong><span>{job.presetName || 'Preparing export'}{job.accel ? ' · ' + job.accel.toLowerCase() : ''}</span></div><Badge kind={kind}>{label}</Badge>
-    <div className="btn-row">{busy ? <button className="btn small-btn" onClick={() => action(() => api.queueCancel(job.id))}>Cancel</button> : <>
-      {['failed', 'cancelled'].includes(job.state) && <button className="btn small-btn" onClick={() => action(async () => { const d = await api.queueRetry(job.id); if (!['waiting', 'processing'].includes(d.job?.state)) throw new Error(d.job?.error || 'Cannot retry'); })}>Retry</button>}
-      {job.result?.output && <button className="btn small-btn" onClick={() => action(() => api.openFolder(job.result.output.dir))}>Show file</button>}
-      <button className="icon-button" aria-label={'Remove job ' + job.sourceName} onClick={() => action(() => api.queueRemove(job.id))}><Icon name="close" size={16}/></button>
-    </>}</div></div>
-    {job.state === 'processing' && <div className="queue-progress"><progress aria-label={'Export progress for ' + job.sourceName} max="100" value={job.phase === 'validating' ? undefined : job.progress?.pct ?? undefined}/><span>{job.phase === 'validating' ? 'Decoding the output to check for errors' : job.progress?.pct != null ? `${Math.round(job.progress.pct)}% of this stage · ${job.progress.speed || 'Calculating speed'}${job.progress.etaSec != null ? ' · about ' + fmtDur(job.progress.etaSec) + ' remaining in this stage' : ''}` : job.phase || 'Preparing media'}</span></div>}
-    {job.error && <ErrorBar>{job.error}</ErrorBar>}
-    {job.result && <p className="completed-specs">{job.result.afterSpecs?.video.resolution} · {job.result.afterSpecs?.video.fps} fps · {job.result.output.size?.human} · Decode check passed</p>}
-    {job.result?.preview && <div className="sample-preview"><p className="field-help">Enhanced sample. Compare with your source monitor above.</p><video controls preload="metadata" src={'/api/queue/' + encodeURIComponent(job.id) + '/video'} aria-label={'Enhanced sample of ' + job.sourceName}/></div>}
-    {!!job.logLines?.length && <LogViewer lines={job.logLines}/>}
-  </div>;
+function Field({label,id,children}){return <div className="studio-field"><label className="field-label" htmlFor={id}>{label}</label>{children}</div>;}
+function SourceVideo({item,crop,stabilize}){const [error,setError]=React.useState(false);return <><video src={item.url} controls preload="metadata" aria-label={'Preview '+item.file.name} onError={()=>setError(true)}/>{(crop!=='off'||stabilize>0)&&<span className="monitor-hint">{crop!=='off'?'9:16 framing. ':''}{stabilize?stabilize+'% border crop. ':''}Render a sample to preview.</span>}{error&&<p className="preview-note">This codec cannot play here. Export a sample to preview in H.264.</p>}</>;}
+function Compare({source,result,offset,compressed}){
+  const before=React.useRef(),after=React.useRef();const [zoom,setZoom]=React.useState(1),[time,setTime]=React.useState(0),[duration,setDuration]=React.useState(5),[playing,setPlaying]=React.useState(false),[error,setError]=React.useState('');
+  async function play(){try{if(playing){before.current.pause();after.current.pause();setPlaying(false);}else{before.current.currentTime=offset+after.current.currentTime;await Promise.all([before.current.play(),after.current.play()]);setPlaying(true);}}catch{before.current.pause();after.current.pause();setPlaying(false);setError('The source codec cannot play in this monitor.');}}
+  function seek(value){setTime(value);after.current.currentTime=value;before.current.currentTime=offset+value;}
+  return <div className="comparison"><div className="comparison-panes">{[[before,source,'Original'],[after,result,compressed?'Compressed simulation':'Enhanced']].map(([ref,url,label])=><div className="comparison-pane" key={label}><span>{label}</span><div className="zoom-viewport"><video ref={ref} src={url} muted playsInline style={{width:zoom*100+'%',height:zoom*100+'%',maxWidth:'none',maxHeight:'none',minHeight:0,objectFit:'contain'}} onError={()=>setError('A video could not play. Try a different source codec.')} onLoadedMetadata={()=>{if(ref===before)ref.current.currentTime=offset;else setDuration(ref.current.duration);}} onTimeUpdate={()=>{if(ref===after){setTime(ref.current.currentTime);if(before.current&&Math.abs(before.current.currentTime-offset-ref.current.currentTime)>.15)before.current.currentTime=offset+ref.current.currentTime;}}} onEnded={()=>{before.current.pause();setPlaying(false);}}/></div></div>)}</div><div className="comparison-controls"><button className="btn" onClick={play}>{playing?'Pause comparison':'Play comparison'}</button><label>Time<input aria-label="Comparison time" type="range" min="0" max={duration||5} step=".01" value={time} onChange={e=>seek(Number(e.target.value))}/></label><label>Zoom<select aria-label="Comparison zoom" value={zoom} onChange={e=>setZoom(Number(e.target.value))}><option value="1">Fit</option><option value="2">2×</option><option value="4">4×</option></select></label></div><ErrorBar>{error}</ErrorBar></div>;
+}
+function QueueRow({job,action}){
+  const busy=['waiting','processing'].includes(job.state),paused=job.state==='paused';
+  const label=paused?'Paused':job.pauseRequested&&busy?'Pausing after this section':job.state==='processing'?(job.phase==='validating'?'Checking output':job.phase||'Exporting'):{waiting:'Queued',completed:'Complete',failed:'Failed',cancelled:'Cancelled'}[job.state];
+  return <div className={'queue-row state-'+job.state}><div className="queue-row-top"><span className="queue-file-icon"><Icon name={job.state==='completed'?'check':'film'}/></span><div className="queue-identity"><strong>{job.sourceName}</strong><span>{job.presetName||job.presetId}{job.checkpoint?' · '+job.checkpoint.completed+'/'+job.checkpoint.total+' sections saved':''}</span></div><Badge kind={job.state==='completed'?'good':job.state==='failed'?'bad':paused?'warn':'info'}>{label}</Badge><div className="btn-row">{busy?<>{job.presetId!=='remux'&&<button className="btn small-btn" disabled={job.pauseRequested} onClick={()=>action(()=>api.queuePause(job.id))}>Pause</button>}<button className="btn small-btn" onClick={()=>action(()=>api.queueCancel(job.id))}>Cancel</button></>:<>{paused&&<button className="btn small-btn" onClick={()=>action(()=>api.queueResume(job.id))}>Resume</button>}{['failed','cancelled'].includes(job.state)&&<button className="btn small-btn" onClick={()=>action(async()=>{const d=await api.queueRetry(job.id);if(!['waiting','processing'].includes(d.job?.state))throw new Error(d.job?.error||'Cannot retry');})}>Retry</button>}{job.result?.output&&<button className="btn small-btn" onClick={()=>action(()=>api.openFolder(job.result.output.dir))}>Show file</button>}<button className="icon-button" aria-label={'Remove job '+job.sourceName} onClick={()=>action(()=>api.queueRemove(job.id))}><Icon name="close" size={16}/></button></>}</div></div>
+    {job.state==='processing'&&<div className="queue-progress"><progress aria-label={'Export progress for '+job.sourceName} max="100" value={job.phase==='validating'?undefined:job.progress?.pct??undefined}/><span>{job.progress?.pct!=null?Math.round(job.progress.pct)+'% of this stage · '+(job.progress.speed||'Calculating speed')+(job.progress.etaSec!=null?' · about '+fmtDur(job.progress.etaSec)+' remaining':''):job.phase||'Preparing media'}</span></div>}
+    {job.error&&<ErrorBar>{job.error}</ErrorBar>}{job.result&&<p className="completed-specs">{job.result.afterSpecs?.video.resolution} · {job.result.afterSpecs?.video.fps} fps · {job.result.output.size?.human} · Decode check passed</p>}{job.result?.preview&&<details className="sample-preview"><summary>Play exported sample</summary><video controls preload="metadata" src={'/api/queue/'+job.id+'/video'} aria-label={'Enhanced sample of '+job.sourceName}/></details>}{!!job.logLines?.length&&<LogViewer lines={job.logLines}/>}</div>;
 }

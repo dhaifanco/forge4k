@@ -1,6 +1,6 @@
 appId: com.forge.videooptimizer
 productName: Forge
-compression: store
+compression: normal
 directories:
   output: release
 files:
@@ -8,9 +8,15 @@ files:
   - server/**
   - dist/**
   - package.json
+asarUnpack:
+  - server/studio-worker.py
 extraResources:
   - from: bin
     to: bin
+    filter:
+      - '**/*'
+      - '!**/__pycache__/**'
+      - '!ai/python/Scripts/**'
   - from: docs/THIRD-PARTY-NOTICES.txt
     to: THIRD-PARTY-NOTICES.txt
 win:

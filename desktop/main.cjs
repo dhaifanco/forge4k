@@ -32,7 +32,7 @@ else {
     window.webContents.on('will-navigate', (event, url) => { if (new URL(url).origin !== origin) event.preventDefault(); });
     window.on('close', event => {
       const busy = require('../server/queue').listJobs().some(j => ['waiting', 'processing'].includes(j.state));
-      if (!closing && busy && dialog.showMessageBoxSync(window, { type: 'question', buttons: ['Keep exporting', 'Stop and close'], defaultId: 0, cancelId: 0, message: 'An export is still running. Stop and close Forge?' }) === 0) event.preventDefault();
+      if (!closing && busy && dialog.showMessageBoxSync(window, { type: 'question', buttons: ['Keep exporting', 'Save progress and close'], defaultId: 0, cancelId: 0, message: 'An export is still running. Completed sections are saved; the current section will restart when you resume. Lossless copies restart from the beginning.' }) === 0) event.preventDefault();
     });
     await window.loadURL(origin);
     if (!smoke && updater.snapshot().checkOnStart && updater.snapshot().feedUrl) updater.check().catch(() => {});

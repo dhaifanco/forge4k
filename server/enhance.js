@@ -4,19 +4,21 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const ff = require('./ffmpeg');
 const presets = require('./presets');
+const studio = require('./studio');
 
 function engineRoot() { return path.join(process.env.FORCE_FFMPEG_DIR || path.join(__dirname, '..', 'bin'), 'ai'); }
 function status() {
   const root = engineRoot();
   const present = files => files.every(file => fs.existsSync(path.join(root,file)));
-  return { upscale: present(['esrgan/realesrgan-ncnn-vulkan.exe','esrgan/vcomp140.dll','esrgan/models/realesrgan-x4plus.bin','esrgan/models/realesrgan-x4plus.param']),
+  return { ...studio.capabilities(), upscale: present(['esrgan/realesrgan-ncnn-vulkan.exe','esrgan/vcomp140.dll','esrgan/models/realesrgan-x4plus.bin','esrgan/models/realesrgan-x4plus.param']),
     interpolate: present(['rife/rife-ncnn-vulkan.exe','rife/vcomp140.dll','rife/rife-v4.6/flownet.bin','rife/rife-v4.6/flownet.param']) };
 }
 function options(value = {}) {
   if (!value || typeof value !== 'object') throw new Error('Invalid enhancement options.');
   const scale = Number(value.scale ?? 1), fps = Number(value.fps ?? 0), denoise = value.denoise ?? 'off';
-  if (![1, 2, 4].includes(scale) || ![0, 60, 120].includes(fps) || !['off', 'gentle'].includes(denoise)) throw new Error('Unsupported enhancement setting.');
-  return { scale, fps, denoise, enabled: scale > 1 || fps > 0 || denoise !== 'off' };
+  if (![1, 2, 4].includes(scale) || ![0, 60, 120].includes(fps) || !['off', 'gentle', 'ai'].includes(denoise)) throw new Error('Unsupported enhancement setting.');
+  const extra=studio.options(value);
+  return { scale, fps, denoise, ...extra, enabled: scale > 1 || fps > 0 || denoise !== 'off' || extra.face>0 || extra.crop!=='off' || extra.stabilize>0 };
 }
 function plan(probe, preset, value, preview = false) {
   const opt = options(value), v = probe.video, target = preset.target || {};
@@ -26,15 +28,16 @@ function plan(probe, preset, value, preview = false) {
   const duration = preview ? Math.min(5, probe.format.durationSec) : probe.format.durationSec;
   if (!Number.isFinite(duration) || duration <= 0) throw new Error('A readable video duration is required.');
   const cap = { shortEdge: target.shortEdge || 2160, longEdge: target.longEdge || 3840 };
-  const dimensions = presets.geometry({ ...v, width: v.width * opt.scale, height: v.height * opt.scale }, cap);
+  const cropped = opt.crop==='off' ? v : v.width/v.height>9/16 ? {...v,width:Math.floor(v.height*9/16/2)*2} : {...v,height:Math.floor(v.width*16/9/2)*2};
+  const dimensions = presets.geometry({ ...cropped, width: cropped.width * opt.scale, height: cropped.height * opt.scale }, cap);
   const fps = opt.fps || Math.min(v.fps, target.maxFps || 120);
   if (opt.fps && opt.fps < v.fps - .01) throw new Error('Interpolation must not lower the source frame rate. Use Keep source instead.');
   const frames = Math.ceil(duration * Math.min(v.fps, fps)) + 2;
   const pixels = v.width * v.height;
-  const neural = opt.scale > 1 || fps > v.fps + .01;
+  const neural = opt.scale > 1 || fps > v.fps + .01 || opt.face>0 || opt.denoise==='ai' || opt.crop!=='off';
   const scratchBytes = neural ? Math.ceil(frames * pixels * 4 * (opt.scale > 1 ? 17 : 1) + Math.ceil(duration * fps + 2) * dimensions.width * dimensions.height * 4 + 256 * 1024 ** 2) : 0;
   return { ...opt, ...dimensions, fps, sourceFps: v.fps, duration, preview: !!preview, scratchBytes,
-    color: 'BT.709 SDR', codec: preview ? 'h264' : target.vcodec || 'h264', reason: [opt.scale > 1 && 'Real-ESRGAN detail enhancement', opt.fps > v.fps + .01 && 'RIFE frame interpolation', opt.denoise !== 'off' && 'gentle temporal noise reduction', 'SDR output'].filter(Boolean).join('; ') + '.' };
+    color: 'BT.709 SDR', codec: preview ? 'h264' : target.vcodec || 'h264', reason: [opt.scale > 1 && 'Real-ESRGAN detail enhancement', opt.fps > v.fps + .01 && 'RIFE frame interpolation', opt.denoise==='ai'?'AI noise reduction':opt.denoise==='gentle'&&'gentle temporal noise reduction', opt.face>0&&'GFPGAN face blend',opt.crop!=='off'&&'9:16 framing',opt.stabilize>0&&'stabilization', 'SDR output'].filter(Boolean).join('; ') + '.' };
 }
 function cleanup(folder, root) {
   const resolved = path.resolve(folder), parent = path.resolve(root);
@@ -44,6 +47,8 @@ function cleanup(folder, root) {
 async function render({ input, output, probe, preset, adv, job, tempRoot, bins }) {
   const p = plan(probe, preset, adv.enhance, adv.preview), engines = status();
   if (p.scale > 1 && !engines.upscale || p.fps > p.sourceFps + .01 && !engines.interpolate) throw new Error('AI engine files are missing. Install the full Forge desktop build.');
+  if(p.face>0&&!engines.face || p.denoise==='ai'&&!engines.denoise || p.crop!=='off'&&!engines.tracking)throw new Error('Studio model files are missing. Install the complete Forge build.');
+  const seek=['-ss',String(adv.segmentStart||0)];
   fs.mkdirSync(tempRoot, { recursive: true });
   const disk = fs.statfsSync(tempRoot);
   if (Number(disk.bavail) * Number(disk.bsize) < p.scratchBytes) throw new Error('Not enough temporary disk space. Allow about ' + Math.ceil(p.scratchBytes / 1024 ** 3) + ' GB, or try the 5-second sample.');
@@ -74,7 +79,8 @@ async function render({ input, output, probe, preset, adv, job, tempRoot, bins }
     if (presets.isHdrish(probe.video)) filters.push('zscale=t=linear:npl=100','format=gbrpf32le','zscale=p=bt709','tonemap=tonemap=mobius:desat=2','zscale=t=bt709:m=bt709:r=limited');
     else if (/bt2020/.test(probe.video.colorPrimaries || '')) filters.push('zscale=p=bt709:t=bt709:m=bt709:r=limited');
     if (p.denoise === 'gentle') filters.push('hqdn3d=1:1:3:3');
-    const encoder = presets.pickEncoder({ probe, adv: { ...adv, target: {vcodec:p.codec} }, gpu: adv.gpu });
+    if(p.stabilize)filters.push(`deshake=rx=32:ry=32:edge=mirror`,`crop=iw*${1-p.stabilize/100}:ih*${1-p.stabilize/100}`,`scale=${probe.video.width}:${probe.video.height}`);
+    const encoder = presets.pickEncoder({ probe:{...probe,video:{...probe.video,width:p.width,height:p.height}}, adv: { ...adv, target: {vcodec:p.codec} }, gpu: adv.gpu });
     function outputArgs() {
       const args = ['-c:v',encoder.encoder];
       if (encoder.accel === 'gpu') args.push('-preset','p6','-rc','vbr','-cq','18','-b:v','0');
@@ -82,19 +88,28 @@ async function render({ input, output, probe, preset, adv, job, tempRoot, bins }
       if (p.codec === 'hevc') args.push('-tag:v','hvc1');
       const ceiling = preset.target?.maxKbps;
       if (ceiling) args.push('-maxrate',ceiling+'k','-bufsize',(ceiling*2)+'k');
-      args.push('-c:a','aac','-b:a',String(preset.target?.audioKbps || 192)+'k','-ar','48000','-ac','2','-map_metadata','-1','-map_chapters','-1','-colorspace','bt709','-color_primaries','bt709','-color_trc','bt709','-movflags','+faststart',output);
+      args.push('-c:a','aac','-b:a',String(preset.target?.audioKbps || 192)+'k','-ar','48000','-ac','2','-map_metadata','-1','-map_chapters','-1','-colorspace','bt709','-color_primaries','bt709','-color_trc','bt709','-movflags','+faststart');
+      if(adv.videoOnly)args.push('-an');
+      args.push(output);
       return args;
     }
-    if (p.scale === 1 && p.fps <= p.sourceFps + .01) {
+    if (p.scale === 1 && p.fps <= p.sourceFps + .01 && !p.face && p.denoise!=='ai' && p.crop==='off') {
       stage('Encoding with noise reduction');
-      return await run(bins.ffmpegPath,['-hide_banner','-nostdin','-y','-i',input,'-map','0:v:0','-map','0:a:0?','-t',String(p.duration),'-vf',[...filters,`fps=${p.fps}`,`scale=${p.width}:${p.height}:flags=lanczos`,'format=yuv420p'].join(','),...outputArgs()],true,null,Math.ceil(p.duration*p.fps));
+      return await run(bins.ffmpegPath,['-hide_banner','-nostdin','-y',...seek,'-i',input,'-map','0:v:0','-map','0:a:0?','-t',String(p.duration),'-vf',[...filters,`fps=${p.fps}`,`scale=${p.width}:${p.height}:flags=lanczos`,'format=yuv420p'].join(','),...outputArgs()],true,null,Math.ceil(p.duration*p.fps));
     }
     filters.push('fps=' + Math.min(p.sourceFps, p.fps), 'format=rgb24');
     stage('Preparing AI frames');
-    await run(bins.ffmpegPath, ['-hide_banner','-nostdin','-y','-i',input,'-t',String(p.duration),'-an','-vf',filters.join(','),'-start_number','1',path.join(source,'%08d.png')], true,null,Math.ceil(p.duration*Math.min(p.sourceFps,p.fps)));
+    await run(bins.ffmpegPath, ['-hide_banner','-nostdin','-y',...seek,'-i',input,'-t',String(p.duration),'-an','-vf',filters.join(','),'-start_number','1',path.join(source,'%08d.png')], true,null,Math.ceil(p.duration*Math.min(p.sourceFps,p.fps)));
     let images = source;
     let count = fs.readdirSync(images).filter(n => n.endsWith('.png')).length;
     if (!count) throw new Error('No frames could be decoded.');
+    if(p.face>0||p.denoise==='ai'||p.crop!=='off') {
+      const treated=path.join(work,'treated');fs.mkdirSync(treated);
+      stage(p.face>0?'Restoring faces on CPU':p.denoise==='ai'?'AI noise reduction on CPU':'Framing the subject');
+      await run(studio.runtime().python,studio.workerArgs({...p,input:images,output:treated},work),false,treated,count);
+      if(fs.readdirSync(treated).filter(n=>n.endsWith('.png')).length!==count)throw new Error('Studio processing produced incomplete frames.');
+      images=treated;
+    }
     if (p.scale > 1) {
       const enhanced = path.join(work,'detail'); fs.mkdirSync(enhanced);
       stage('AI detail enhancement');
@@ -107,6 +122,12 @@ async function render({ input, output, probe, preset, adv, job, tempRoot, bins }
       cleanupChild(enhanced,work); cleanupChild(source,work);
       images=scaled;
     }
+    if(p.scale===1 && p.fps>p.sourceFps+.01 && (p.width!==probe.video.width||p.height!==probe.video.height)){
+      const scaled=path.join(work,'scaled');fs.mkdirSync(scaled);
+      stage('Sizing motion frames');
+      await run(bins.ffmpegPath,['-hide_banner','-nostdin','-y','-framerate',String(p.sourceFps),'-start_number','1','-i',path.join(images,'%08d.png'),'-vf',`scale=${p.width}:${p.height}:flags=lanczos`,'-start_number','1',path.join(scaled,'%08d.png')],true,null,count);
+      images=scaled;
+    }
     if (p.fps > p.sourceFps + .01) {
       if (count < 2) throw new Error('Interpolation needs at least two source frames.');
       const interpolated = path.join(work, 'motion'); fs.mkdirSync(interpolated);
@@ -117,10 +138,14 @@ async function render({ input, output, probe, preset, adv, job, tempRoot, bins }
       await run(path.join(engineRoot(),'rife','rife-ncnn-vulkan.exe'), rifeArgs,false,interpolated,desired);
       const actual = fs.readdirSync(interpolated).filter(n => n.endsWith('.png')).length;
       if (actual !== desired) throw new Error('Interpolation produced an incomplete frame sequence.');
+      if(p.motionGuard!=='off'&&engines.tracking){
+        stage('Protecting cuts and fast motion');
+        await run(studio.runtime().python,studio.workerArgs({...p,task:'protect',input:images,output:interpolated},work));
+      }
       images = interpolated; count = actual;
     }
     stage('Encoding enhanced video');
-    const args = ['-hide_banner','-nostdin','-y','-framerate',String(p.fps),'-start_number','1','-i',path.join(images,'%08d.png'),'-i',input,'-map','0:v:0','-map','1:a:0?','-t',String(p.duration),'-vf',`scale=${p.width}:${p.height}:flags=lanczos,tpad=stop_mode=clone:stop_duration=1,format=yuv420p`,...outputArgs()];
+    const args = ['-hide_banner','-nostdin','-y','-framerate',String(p.fps),'-start_number','1','-i',path.join(images,'%08d.png'),...seek,'-i',input,'-map','0:v:0','-map','1:a:0?','-t',String(p.duration),'-vf',`scale=${p.width}:${p.height}:flags=lanczos,tpad=stop_mode=clone:stop_duration=1,format=yuv420p`,...outputArgs()];
     return await run(bins.ffmpegPath,args,true,null,Math.ceil(p.duration*p.fps));
   } finally { cleanup(work,tempRoot); }
 }

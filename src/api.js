@@ -5,6 +5,13 @@ const j = async (res) => {
 };
 
 export const api = {
+  smart: uploadId => fetch('/api/smart',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({uploadId})}).then(j),
+  recipes: () => fetch('/api/recipes').then(j),
+  saveRecipe: value => fetch('/api/recipes',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(value)}).then(j),
+  deleteRecipe: name => fetch('/api/recipes/'+encodeURIComponent(name),{method:'DELETE'}).then(j),
+  queuePause: id => fetch('/api/queue/'+encodeURIComponent(id)+'/pause',{method:'POST'}).then(j),
+  queueResume: id => fetch('/api/queue/'+encodeURIComponent(id)+'/resume',{method:'POST'}).then(j),
+  compression: id => fetch('/api/queue/'+encodeURIComponent(id)+'/compression',{method:'POST'}).then(j),
   updates: () => fetch('/api/updates').then(j),
   updateAction: (action, body = {}) => fetch('/api/updates/' + action, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(j),
   enhancement: () => fetch('/api/enhancement').then(j),

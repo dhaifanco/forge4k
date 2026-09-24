@@ -42,7 +42,9 @@ function decideStrategy(probe, preset, adv = {}) {
 }
 function pickEncoder({ probe, adv = {}, gpu }) {
   const codec = (adv.target || {}).vcodec === 'hevc' ? 'hevc' : 'h264';
-  const available = gpu && gpu.available && gpu.nvenc && gpu.nvenc[codec];
+  const dimensions=probe?.video ? geometry(probe.video,adv.target||{}) : null;
+  const tooSmall=dimensions && (dimensions.width<160 || dimensions.height<160);
+  const available = !tooSmall && gpu && gpu.available && gpu.nvenc && gpu.nvenc[codec];
   return adv.encoder !== 'cpu' && available ? { codec, encoder: codec + '_nvenc', accel: 'gpu' } : { codec, encoder: codec === 'hevc' ? 'libx265' : 'libx264', accel: 'cpu' };
 }
 function ceilingKbps(codec, edge) { return edge > 1080 ? 80000 : 20000; }

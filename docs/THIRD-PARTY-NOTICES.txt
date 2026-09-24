@@ -1,4 +1,8 @@
 Forge uses Electron, React, Express, FFmpeg and their dependencies.
+Forge 1.3 bundles Python 3.11.9 (PSF license) and a CPU PyTorch runtime for optional face restoration and neural denoising. Python LICENSE.txt and package dist-info license files remain in resources/bin/ai/python.
+GFPGAN 1.3.8 / GFPGANv1.4 model: https://github.com/TencentARC/GFPGAN (Apache-2.0). Real-ESRGAN 0.3.0 / realesr-general-x4v3 model: https://github.com/xinntao/Real-ESRGAN (BSD-3-Clause). Model project licenses are in resources/bin/ai/licenses.
+OpenCV 4.11 provides frontal-face cascades, image operations and tracking measurements. Its wheel license files and cascade notices are retained. Face regions are detected and blended by Forge; no face-recognition identity database is used.
+The complete pinned studio dependency inventory is in docs/studio-requirements.txt in the source repository. The astronaut image used only in local QA comes from scikit-image's NASA public-domain test data and is not a product testimonial or bundled sample.
 AI detail enhancement uses Real-ESRGAN ncnn Vulkan, official Windows release 20220424 (Real-ESRGAN v0.2.5.0), with the realesrgan-x4plus model.
 Source: https://github.com/xinntao/Real-ESRGAN-ncnn-vulkan and https://github.com/xinntao/Real-ESRGAN
 Frame interpolation uses RIFE ncnn Vulkan, official Windows release 20221029, with the rife-v4.6 model.

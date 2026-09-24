@@ -9,6 +9,7 @@ const ff = require('./ffmpeg');
 const presetsMod = require('./presets');
 const gpuMod = require('./gpu');
 const enhance = require('./enhance');
+const studio = require('./studio');
 const { PRESETS, decideStrategy, buildArgs } = presetsMod;
 
 // Single source of truth for job records. V1 /api/optimize writes here too.
@@ -40,7 +41,7 @@ function listJobs() {
 
 // enqueue(payload): { inputPath, sourceName, presetId, adv, sourcePath (original), keepInput }
 function enqueue(payload) {
-  const duplicate = [...JOBS.values()].find(j => j._payload?.inputPath === payload.inputPath && ['waiting', 'processing'].includes(j.state));
+  const duplicate = [...JOBS.values()].find(j => j._payload?.inputPath === payload.inputPath && (j.presetId||'remux') === (payload.presetId||'remux') && ['waiting', 'processing','paused'].includes(j.state));
   if (duplicate) { const error = new Error('This source already has an active export. Wait for it to finish or cancel it.'); error.status=409; throw error; }
   const id = newId('job');
   const job = {
@@ -76,6 +77,8 @@ function remove(id) {
   // Reclaim the staged input of a never-finished job (cancelled/failed jobs keep their
   // input alive for Retry — deleting the job must not leak it in data/uploads).
   releaseInput(j);
+  studio.discard(j);
+  if(j.compressionPath && j.result?.output?.path && j.compressionPath===j.result.output.path+'.compression.mp4'){try{fs.unlinkSync(j.compressionPath);}catch{}}
   const qi = QUEUE.indexOf(id);
   if (qi >= 0) QUEUE.splice(qi, 1);
   JOBS.delete(id);
@@ -86,25 +89,29 @@ function remove(id) {
 function retry(id) {
   const j = JOBS.get(id);
   if (!j) return null;
-  if (j.state === 'processing' || j.state === 'waiting') return jobSnapshot(j);
+  if (!['failed','cancelled'].includes(j.state)) return jobSnapshot(j);
   // re-enqueue a fresh job with the same payload
   if (!j._payload || !fs.existsSync(j._payload.inputPath)) {
     j.error = 'Cannot retry — source file no longer staged. Drop the file again.';
     return jobSnapshot(j);
   }
   const payload = j._payload;
+  const result=enqueue(payload);
+  studio.discard(j);
   j._payload = null;
-  return enqueue(payload);
+  persist();
+  return result;
 }
 
 function cancel(id) {
   const j = JOBS.get(id);
   if (!j) return false;
-  if (j.state === 'waiting') {
+  if (j.state === 'waiting' || j.state==='paused') {
     j.state = 'cancelled'; j.status = 'cancelled';
     j.error = 'Cancelled before start';
     j.finishedAt = new Date().toISOString();
     persist();
+  studio.discard(j);
     // Keep the id in QUEUE so the job still shows up in /api/queue as Cancelled —
     // splicing it out orphans the record (in JOBS but invisible in listJobs).
     setImmediate(pump);
@@ -116,6 +123,18 @@ function cancel(id) {
     return true;
   }
   return false;
+}
+
+function pause(id) {
+  const j=JOBS.get(id);if(!j||!['waiting','processing'].includes(j.state))return false;
+  if(j.presetId==='remux')throw new Error('Lossless copy cannot pause; it can be cancelled.');
+  j.pauseRequested=true;
+  if(j.state==='waiting'){j.state='paused';j.status='paused';}
+  persist();return true;
+}
+function resume(id) {
+  const j=JOBS.get(id);if(!j||j.state!=='paused')return false;
+  j.pauseRequested=false;j.cancelRequested=false;j.error=null;j.state='waiting';j.status='waiting';persist();setImmediate(pump);return true;
 }
 
 function cancelAll() {
@@ -133,9 +152,10 @@ async function pump() {
   try {
     await runJob(job);
   } catch (e) {
-    job.state = job.cancelRequested ? 'cancelled' : 'failed'; job.status = job.state;
+    job.state = job.pauseRequested ? 'paused' : job.cancelRequested ? 'cancelled' : 'failed'; job.status = job.state;
     job.error = String(e.message || e);
     cleanupJobFiles(job, false);
+    if(job.state==='cancelled')studio.discard(job);
   }
   job.finishedAt = new Date().toISOString();
   if (job._removeAfterCancel) { remove(nextId); }
@@ -186,14 +206,15 @@ async function runJob(job) {
   if (job.cancelRequested) throw new Error('Cancelled');
   const useGpu = settings.preferGpu !== false && advUser.encoder !== 'cpu';
   const enhancementPlan = enhanced ? enhance.plan(before, presetDef, advUser.enhance, advUser.preview) : null;
-  const strategy = enhancementPlan ? { reencode: true, reencodeVideo: true, reencodeAudio: true, reason: enhancementPlan.reason } : decideStrategy(before, presetDef, advUser);
+  const strategy = enhancementPlan ? { reencode: true, reencodeVideo: true, reencodeAudio: true, reason: enhancementPlan.reason } : presetDef.mode!=='remux' ? {reencode:true,reencodeVideo:true,reencodeAudio:true,reason:'Encode independently playable sections for resumable export.'} : decideStrategy(before, presetDef, advUser);
   const advFull = Object.assign({}, advUser, presetDef.target ? { target: presetDef.target } : {});
   if (enhancementPlan) advFull.target = { ...advFull.target, vcodec: enhancementPlan.codec };
+  if(advUser.preview)advFull.target={...advFull.target,vcodec:'h264'};
   advFull.gpu = useGpu ? gpu : null;
   if (strategy.reencode && strategy.reencodeVideo) {
     // Same gate as the args: pass the useGpu-filtered value, not raw detection,
     // or a preferGpu=false job would be labeled "GPU ENCODE" (BUG-2).
-    const enc = presetsMod.pickEncoder({ probe: before, adv: advFull, gpu: useGpu ? gpu : null });
+    const enc = presetsMod.pickEncoder({ probe: enhancementPlan?{...before,video:{...before.video,width:enhancementPlan.width,height:enhancementPlan.height}}:before, adv: advFull, gpu: useGpu ? gpu : null });
     advFull.encoderResolved = enc.accel;           // gpu | cpu
     advFull.encoderName = enc.encoder;             // h264_nvenc | hevc_nvenc | libx264 | libx265
     advFull.accelLabel = enc.accel === 'gpu' ? 'GPU ENCODE' : 'CPU ENCODE';
@@ -220,11 +241,11 @@ async function runJob(job) {
   job.outputFinal = finalName;
   job.outDir = outDir;
 
-  const durationSec = enhancementPlan?.duration || before.format.durationSec || 0;
+  const durationSec = advUser.preview?Math.min(5,before.format.durationSec):before.format.durationSec || 0;
   const t0 = Date.now();
   let lastLog = 0;
 
-  const run = enhanced ? await enhance.render({ input: inputPath, output: tmpOutput, probe: before, preset: presetDef, adv: advFull, job, tempRoot: tempDir, bins }) : await ff.runBin(bins.ffmpegPath, args, {
+  const run = presetDef.mode!=='remux' ? await studio.render({ input: inputPath, output: tmpOutput, probe: before, preset: presetDef, adv: advFull, job, tempRoot: tempDir, bins },strategy) : await ff.runBin(bins.ffmpegPath, args, {
     timeoutMs: 1000 * 60 * 60 * 3,
     onSpawn: (child) => { job.child = child; if (job.cancelRequested) child.kill(); },
     onProgressKv: (kv) => {
@@ -262,6 +283,7 @@ async function runJob(job) {
     }
   });
 
+  if(run.paused)return;
   if (job.cancelRequested) {
     job.state = 'cancelled'; job.status = 'cancelled';
     job.error = 'Cancelled';
@@ -312,7 +334,8 @@ async function runJob(job) {
   job.state = 'completed'; job.status = 'done';
   job.result = {
     id: job.id,
-    preview: enhanced && !!advUser.preview,
+    preview: !!advUser.preview,
+    sampleStart: Number(advUser.sampleStart)||0,
     enhancement: enhancementPlan,
     preset: presetDef.id, presetName: presetDef.name,
     mode: strategy.reencode ? 're-encode' : 'lossless remux',
@@ -331,6 +354,7 @@ async function runJob(job) {
   };
   store.addHistory(job.result);
   cleanupJobFiles(job, true);
+  studio.discard(job);
   releaseInput(job);
   job._payload = null;
 }
@@ -399,10 +423,10 @@ function persist() {
 function restore() {
   for (const j of store.readJSON(queueFile, [])) {
     if (!j.id) continue;
-    if (['waiting', 'processing'].includes(j.state)) { j.state = 'cancelled'; j.status = 'cancelled'; j.error = 'Interrupted by shutdown. Retry to resume from the beginning.'; }
+    if (['waiting', 'processing'].includes(j.state)) { j.state = 'paused'; j.status = 'paused'; j.error = 'Interrupted by shutdown. Resume continues from the last completed section.'; }
     j.cancelRequested = false;
     JOBS.set(j.id, j); QUEUE.push(j.id);
   }
 }
-function shutdown() { stopping = true; cancelAll(); persist(); }
-module.exports = { JOBS, enqueue, remove, retry, cancel, cancelAll, getJob, listJobs, pump, currentGpu, buildOutputName, uniqueOutPath, lastErr, restore, shutdown };
+function shutdown() { stopping = true; for(const j of JOBS.values()){if(['waiting','processing'].includes(j.state)){j.pauseRequested=true;j.state='paused';j.status='paused';if(j.child)j.child.kill();}} persist(); }
+module.exports = { JOBS, enqueue, remove, retry, cancel, cancelAll, pause, resume, getJob, listJobs, pump, currentGpu, buildOutputName, uniqueOutPath, lastErr, restore, shutdown };

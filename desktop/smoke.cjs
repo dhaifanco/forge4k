@@ -31,11 +31,36 @@ module.exports = async function smoke(window, folder) {
     assert.equal(await run(`!!document.querySelector('.plan-table')`), true);
     assert.equal(await run(`document.querySelector('video')?.getAttribute('src')?.startsWith('blob:')`), true);
     await capture('workspace-loaded');
+    if(process.env.FORGE_SMOKE_STUDIO){
+      await click('Smart Auto');
+      for(let i=0;i<50;i++){if(await run(`!!document.querySelector('.studio-notice')`))break;await pause(200);}
+      assert.equal(await run(`!!document.querySelector('.studio-notice')`),true);
+      await click('Dismiss notice').catch(async()=>{await run(`document.querySelector('[aria-label="Dismiss notice"]').click()`);});
+      await click('Framing');
+      for(const value of ['center','follow','manual','off']){
+        await run(`(()=>{const s=document.querySelector('#crop-mode');s.value=${JSON.stringify(value)};s.dispatchEvent(new Event('change',{bubbles:true}));})()`);await pause(250);
+        if(value==='manual')assert.equal(await run(`!!document.querySelector('#crop-x')&&!!document.querySelector('#crop-y')`),true);
+      }
+      for(const value of ['5','10','0']){await run(`(()=>{const s=document.querySelector('#stabilize');s.value=${JSON.stringify(value)};s.dispatchEvent(new Event('change',{bubbles:true}));})()`);await pause(250);}
+      await click('Setup');
+      await run(`(()=>{const s=document.querySelector('#recipe-name');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(s,'Studio QA');s.dispatchEvent(new Event('input',{bubbles:true}));})()`);await pause(250);
+      await click('Save');assert.equal(await run(`document.querySelector('#saved-look').value`),'Studio QA');
+      await click('Delete saved preset');
+      await run(`document.querySelector('.enhancement-controls summary').click()`);
+      await run(`document.querySelector('.enhancement-controls input').click()`);await pause(150);
+      assert.equal(await run(`document.querySelector('.enhancement-controls input').checked`),true);
+      await run(`document.querySelector('.enhancement-controls input').click()`);
+      result.studioControls='Smart analysis, all framing modes, stabilization modes, preset save/delete and additional-destination toggle passed';
+    }
     await run(`(()=>{ const s=document.querySelector('#export-preset'); s.value='master_4k120'; s.dispatchEvent(new Event('change',{bubbles:true})); })()`);
     await pause(350);
     assert.equal(await run(`document.querySelector('#export-preset').value`), 'master_4k120');
     if (process.env.FORGE_SMOKE_AI) {
-      await run(`document.querySelector('.enhancement-controls summary').click()`);
+      await click('Detail');
+      if(process.env.FORGE_SMOKE_STUDIO){
+        for(const [id,values] of [['ai-scale',['4','1']],['ai-noise',['ai','off']],['motion-guard',['conservative','off','cuts']]])for(const value of values){await run(`(()=>{const s=document.getElementById(${JSON.stringify(id)});s.value=${JSON.stringify(value)};s.dispatchEvent(new Event('change',{bubbles:true}));})()`);await pause(180);assert.equal(await run(`document.getElementById(${JSON.stringify(id)}).value`),value);}
+        for(const value of ['0.3','0']){await run(`(()=>{const s=document.querySelector('#face-strength');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(s,${JSON.stringify(value)});s.dispatchEvent(new Event('input',{bubbles:true}));})()`);await pause(200);assert.equal(await run(`document.querySelector('#face-strength').value`),value);}
+      }
       for (const [id,value] of [['ai-scale','2'],['ai-fps','120'],['ai-noise','gentle']]) {
         await run(`(()=>{const s=document.getElementById(${JSON.stringify(id)});s.value=${JSON.stringify(value)};s.dispatchEvent(new Event('change',{bubbles:true}));})()`); await pause(400);
       }
@@ -48,15 +73,34 @@ module.exports = async function smoke(window, folder) {
       assert.equal(await run(`document.querySelector('.sample-preview video').error`),null);
       assert.equal(await run(`document.querySelectorAll('.source-row').length`),1);
       await run(`document.querySelector('.sample-preview').scrollIntoView({block:'center'})`); await capture('ai-sample');
+      if(process.env.FORGE_SMOKE_STUDIO){
+        await click('Before / after');await pause(600);
+        assert.equal(await run(`document.querySelectorAll('.comparison video').length`),2);
+        await click('Play comparison');await pause(100);
+        await run(`(()=>{const s=document.querySelector('[aria-label="Comparison zoom"]');s.value='2';s.dispatchEvent(new Event('change',{bubbles:true}));})()`);await pause(250);
+        assert.equal(await run(`document.querySelector('[aria-label="Comparison zoom"]').value`),'2');
+        await run(`document.querySelector('.monitor').scrollIntoView({block:'start'})`);await capture('comparison');
+        await click('Compression preview');
+        for(let i=0;i<80;i++){if(await run(`document.querySelector('.comparison')?.textContent.includes('Compressed simulation')`))break;await pause(250);}
+        assert.equal(await run(`document.querySelector('.comparison')?.textContent.includes('Compressed simulation')`),true);
+        await click('Original');
+        result.comparison='Two synchronized videos, play, zoom, original toggle and real compression simulation passed';
+      }
       for(const [id,value] of [['ai-scale','1'],['ai-fps','0'],['ai-noise','off']]){
         await run(`(()=>{const s=document.getElementById(${JSON.stringify(id)});s.value=${JSON.stringify(value)};s.dispatchEvent(new Event('change',{bubbles:true}));})()`);await pause(300);
       }
       await click('Clear finished jobs');
+      await click('Setup');
       result.ai='Real 2x detail + RIFE 120fps + gentle noise reduction; sample playback without errors; source retained for full export';
     }
     await run(`(()=>{ const s=document.querySelector('#export-preset'); s.value='tiktok_1080p60'; s.dispatchEvent(new Event('change',{bubbles:true})); })()`);
     await pause(350);
     await run(`document.querySelector('.export-button').click()`);
+    if(process.env.FORGE_SMOKE_STUDIO){
+      for(let i=0;i<30;i++){if(await run(`[...document.querySelectorAll('button')].some(b=>b.textContent.trim()==='Pause')`))break;await pause(50);}
+      const pauseClicked=await run(`(()=>{const b=[...document.querySelectorAll('button')].find(b=>b.textContent.trim()==='Pause');if(b){b.click();return true;}return false;})()`);
+      if(pauseClicked){for(let i=0;i<80;i++){if(await run(`[...document.querySelectorAll('button')].some(b=>b.textContent.trim()==='Resume')`))break;await pause(250);}await click('Resume');result.pauseResume='Pause at section boundary and Resume clicked successfully';}
+    }
     for (let i = 0; i < 100; i++) { if (await run(`!!document.querySelector('.completed-specs')`)) break; await pause(250); }
     assert.equal(await run(`!!document.querySelector('.completed-specs')`), true);
     await capture('workspace-exported');

@@ -1,7 +1,10 @@
-Forge 1.2.1
+Forge 1.3.0
 
-AI detail enhancement now runs before frame interpolation, reducing unnecessary neural inference. Fixed-clip benchmark: 23.1s to 7.8s; actual export time varies with footage and hardware.
-Noise-only exports avoid intermediate PNG sequences. AI stages report frame progress, speed and estimated remaining time.
-Update downloads use bounded byte ranges with stall recovery, retries and cancellation. Verified installers remain ready when exports prevent installation.
-Fixed invalid-media API failures, duplicate exports, staged-file cleanup, incomplete model detection, false HDR classification and duration formatting.
-Existing 1.1/1.2 users whose old updater stalls should install this setup executable once. Data and settings remain outside the application directory.
+Redesigned dark studio with Setup, Detail and Framing panels, synchronized before/after preview, zoom, sample positioning and reduced-motion support.
+Smart Auto inspects source specs and sample brightness. Save your own presets and export several destinations in one batch.
+Optional local GFPGAN face blending and Real-ESRGAN neural denoising use the bundled CPU runtime. Preview first: models can change faces or smooth detail, and CPU processing can take substantial time.
+Portrait 9:16 crop supports center, manual position and smoothed largest-frontal-face following. Stabilization compensates small camera shake with a visible border-crop setting.
+Scene-cut and conservative fast-motion protection replace risky interpolated frames with source-frame holds. Compression preview simulates a heavily compressed upload; it does not predict platform output.
+Pause social/master exports at validated five-second checkpoints, then resume after reopening Forge. The current unfinished section restarts. Lossless remux can be cancelled but does not use checkpoints.
+Fixed tiny-video GPU encoding failures, the export lock after clearing a sample, and shared-source ownership for multiple export destinations.
+The larger installer includes the local AI runtime and models. No external Python installation is required. Existing older updaters that stall can be bypassed by installing this setup executable once.
