@@ -1,0 +1,79 @@
+'use strict';
+const fs = require('node:fs');
+const path = require('node:path');
+const assert = require('node:assert/strict');
+
+module.exports = async function smoke(window, folder) {
+  fs.mkdirSync(folder, { recursive: true });
+  const errors = [];
+  window.webContents.on('console-message', (_event, level, message) => { if (level === 3) errors.push(message); });
+  const run = source => window.webContents.executeJavaScript(source);
+  const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
+  const click = async label => { assert.equal(await run(`(()=>{const b=[...document.querySelectorAll('button')].find(b=>b.textContent.trim()===${JSON.stringify(label)});if(!b || b.disabled)return false;b.click();return true})()`), true, label); await pause(650); };
+  const navigate = async label => { await run(`[...document.querySelectorAll('nav a')].find(a=>a.textContent.includes(${JSON.stringify(label)})).click()`); await pause(650); };
+  const capture = async name => { await pause(200); fs.writeFileSync(path.join(folder, name + '.png'), (await window.webContents.capturePage()).toPNG()); };
+  const result = await run(`Promise.all(['/api/health','/api/presets','/api/queue','/api/updates'].map(p=>fetch(p).then(r=>r.json()))).then(([health,presets,queue,updates])=>({health,presets:presets.presets.length,queue:queue.items.length,updates}))`);
+  assert.equal(result.health.ffmpegReady, true);
+  assert.equal(result.updates.desktop, true);
+  await pause(450); await capture('workspace-empty');
+  result.pages = [];
+  for (const [label, heading] of [['Video Analyzer', 'Video Analyzer'], ['History', 'History'], ['Settings', 'Settings'], ['Updates', 'Updates'], ['Optimizer', 'Video workspace']]) {
+    await run(`[...document.querySelectorAll('nav a')].find(a=>a.textContent.includes(${JSON.stringify(label)})).click()`);
+    await pause(600);
+    const actual = await run(`document.querySelector('h1')?.textContent`);
+    assert.equal(actual, heading); result.pages.push({ label, heading: actual });
+    if (label === 'Settings' || label === 'Updates') await capture(label.toLowerCase());
+  }
+  if (process.env.FORGE_SMOKE_VIDEO) {
+    const base64 = fs.readFileSync(process.env.FORGE_SMOKE_VIDEO).toString('base64');
+    await run(`(()=>{ const bytes=Uint8Array.from(atob(${JSON.stringify(base64)}),c=>c.charCodeAt(0)); const file=new File([bytes],'QA source.mp4',{type:'video/mp4'}); const dt=new DataTransfer(); dt.items.add(file); const input=document.querySelector('input[type=file]'); input.files=dt.files; input.dispatchEvent(new Event('change',{bubbles:true})); })()`);
+    for (let i = 0; i < 50; i++) { if (await run(`!!document.querySelector('.plan-table')`)) break; await pause(200); }
+    assert.equal(await run(`!!document.querySelector('.plan-table')`), true);
+    assert.equal(await run(`document.querySelector('video')?.getAttribute('src')?.startsWith('blob:')`), true);
+    await capture('workspace-loaded');
+    await run(`(()=>{ const s=document.querySelector('#export-preset'); s.value='master_4k120'; s.dispatchEvent(new Event('change',{bubbles:true})); })()`);
+    await pause(350);
+    assert.equal(await run(`document.querySelector('#export-preset').value`), 'master_4k120');
+    await run(`(()=>{ const s=document.querySelector('#export-preset'); s.value='tiktok_1080p60'; s.dispatchEvent(new Event('change',{bubbles:true})); })()`);
+    await pause(350);
+    await run(`document.querySelector('.export-button').click()`);
+    for (let i = 0; i < 100; i++) { if (await run(`!!document.querySelector('.completed-specs')`)) break; await pause(250); }
+    assert.equal(await run(`!!document.querySelector('.completed-specs')`), true);
+    await capture('workspace-exported');
+    await run(`document.querySelector('.logviewer summary')?.click()`);
+    assert.equal(await run(`document.querySelector('.logviewer')?.open`), true);
+    result.export = 'UI import, local preview, preset change, export, completion and log toggle passed';
+    await click('Clear finished jobs');
+    await navigate('History');
+    await run(`document.querySelector('.history-record summary').click()`);
+    assert.equal(await run(`document.querySelector('.history-record').open`), true);
+    await click('Clear history'); await click('Keep history');
+    await click('Remove record');
+    assert.equal(await run(`!!document.querySelector('.empty-state')`), true);
+  }
+  await navigate('Settings');
+  for (const label of ['Save preferences', 'Refresh hardware', 'Save engine paths', 'Re-detect engine']) {
+    await click(label);
+    for (let i=0;i<40;i++) { if(await run(`!!document.querySelector('.okbar')`)) break; await pause(250); }
+    assert.equal(await run(`!!document.querySelector('.okbar')`), true, label);
+  }
+  // Exercise the update UI without publishing a fake release or launching an installer.
+  await run(`(()=>{const real=window.fetch;window.qaUpdateCalls=[];let state={desktop:true,currentVersion:'1.1.0',phase:'idle',feedUrl:'https://github.com/dhaifanco/forge4k/releases/latest/download/forge-update.json',checkOnStart:true};window.fetch=async(input,options)=>{if(String(input).startsWith('/api/updates')){const action=String(input).split('/')[3];if(action){qaUpdateCalls.push(action);if(action==='check')state={...state,phase:'available',release:{version:'1.2.0',newer:true,size:1234,notes:'QA fixture'}};if(action==='download'||action==='importFile')state.phase='ready';if(action==='install')state.phase='installing';if(action==='save')state={...state,...JSON.parse(options.body),phase:'idle'};}return new Response(JSON.stringify(state),{headers:{'Content-Type':'application/json'}});}return real(input,options);};})()`);
+  await navigate('Updates');
+  await run(`document.querySelector('.check input').click()`);
+  for (const label of ['Save update settings','Check for updates','Download update','Close Forge and install']) await click(label);
+  await navigate('Optimizer');
+  result.updateUI = await run(`window.qaUpdateCalls`);
+  assert.deepEqual(result.updateUI, ['save','check','download','install']);
+  await run(`document.querySelector('nav a').focus()`);
+  assert.equal(await run(`document.activeElement.tagName`), 'A');
+  result.preferences = 'Save preferences, refresh hardware, save paths, re-detect engine passed';
+  window.setMinimumSize(360, 600); window.setSize(390, 844); await pause(250);
+  result.mobileOverflow = await run(`document.documentElement.scrollWidth>innerWidth || document.querySelector('.main').scrollWidth>document.querySelector('.main').clientWidth`);
+  assert.equal(result.mobileOverflow, false); await capture('workspace-narrow');
+  window.setSize(1280, 860); await pause(200);
+  result.errors = errors;
+  assert.deepEqual(errors, []);
+  fs.writeFileSync(path.join(folder, 'desktop-smoke.json'), JSON.stringify(result, null, 2));
+  return result;
+};

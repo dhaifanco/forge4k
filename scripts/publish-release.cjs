@@ -1,0 +1,21 @@
+'use strict';
+const fs = require('node:fs');
+const path = require('node:path');
+const { execFileSync } = require('node:child_process');
+const core = require('../desktop/update-core.cjs');
+const root = path.resolve(__dirname, '..');
+const repo = 'dhaifanco/forge4k';
+const gh = args => execFileSync('gh', args, { cwd: root, stdio: 'inherit' });
+(async () => {
+  const version = require('../package.json').version;
+  const manifest = path.join(root, 'release', 'forge-update.json');
+  const release = core.verifyManifest(JSON.parse(fs.readFileSync(manifest)), fs.readFileSync(path.join(root, 'desktop', 'update-public.pem')), '0.0.0');
+  if (release.version !== version) throw new Error('Build version and signed manifest do not match.');
+  const installer = path.join(root, 'release', release.file);
+  const portable = path.join(root, 'release', `Forge-${version}-portable.exe`);
+  await core.verifyInstaller(installer, release);
+  fs.accessSync(portable);
+  const tag = `v${version}`;
+  gh(['release', 'create', tag, '--repo', repo, '--target', 'main', '--draft', '--title', `Forge ${version}`, '--notes-file', 'release-notes.txt', installer, portable, manifest]);
+  gh(['release', 'edit', tag, '--repo', repo, '--draft=false', '--latest']);
+})().catch(error => { console.error(error.message); process.exitCode = 1; });

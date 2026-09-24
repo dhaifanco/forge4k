@@ -1,0 +1,29 @@
+appId: com.forge.videooptimizer
+productName: Forge
+compression: store
+directories:
+  output: release
+files:
+  - desktop/**
+  - server/**
+  - dist/**
+  - package.json
+extraResources:
+  - from: bin
+    to: bin
+  - from: docs/THIRD-PARTY-NOTICES.txt
+    to: THIRD-PARTY-NOTICES.txt
+win:
+  target:
+    - target: portable
+      arch: [x64]
+    - target: nsis
+      arch: [x64]
+  signAndEditExecutable: false
+nsis:
+  artifactName: Forge-${version}-setup.${ext}
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+portable:
+  artifactName: Forge-${version}-portable.${ext}

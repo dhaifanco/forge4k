@@ -1,0 +1,7 @@
+Forge uses Electron, React, Express, FFmpeg and their dependencies.
+Electron license and Chromium third-party notices are included in the application distribution.
+FFmpeg executables in this local build come from the installed Gyan FFmpeg 9.0.1 full build.
+The accompanying FFmpeg LICENSE and README files are included under resources/bin.
+FFmpeg project and source: https://ffmpeg.org/
+Build provider, build scripts and corresponding-source information: https://www.gyan.dev/ffmpeg/builds/
+This is a local development distribution. Before public redistribution, provide corresponding source and all notices required by the exact FFmpeg build configuration and linked libraries.

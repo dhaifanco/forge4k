@@ -1,0 +1,32 @@
+{
+  "name": "forge-local-video-optimizer",
+  "version": "1.1.0",
+  "private": true,
+  "main": "desktop/main.cjs",
+  "description": "Local-first TikTok/Reels video optimizer. FFprobe inspection + FFmpeg lossless remux / optional re-encode. Nothing leaves your PC.",
+  "scripts": {
+    "dev": "concurrently -k -n api,web -c green,cyan \"node server/index.js\" \"vite --port 5178\"",
+    "build": "vite build",
+    "start": "node server/index.js",
+    "preview": "npm run build && node server/index.js",
+    "desktop": "npm run build && electron .",
+    "test": "node --test tests/regression.test.cjs tests/updates.test.cjs",
+    "dist:win": "npm run build && node scripts/package-windows.cjs",
+    "release:manifest": "node scripts/release-manifest.cjs",
+    "release:win": "node scripts/release-manifest.cjs --init && npm run dist:win && npm run release:manifest"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "multer": "^2.0.1",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^7.18.4"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^6.1.1",
+    "concurrently": "^9.0.0",
+    "electron": "^44.4.5",
+    "electron-builder": "^26.15.3",
+    "vite": "^8.3.0"
+  }
+}

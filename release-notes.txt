@@ -1,0 +1,6 @@
+Forge 1.1.0
+
+Redesigned video workspace with local preview, export planning and clearer queue controls.
+New update center: GitHub release checks, verified downloads and offline update import.
+Release manifests are signed by the publisher; installers are verified before launch.
+Portrait-safe social exports and separate 4K120 master presets remain available.

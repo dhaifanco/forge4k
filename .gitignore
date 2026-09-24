@@ -1,0 +1,10 @@
+node_modules/
+dist/
+data/
+samples/
+*.log
+bin/
+release/
+.test-data/
+.release-private/
+Forge-V2-Portable.zip
