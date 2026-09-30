@@ -6,11 +6,11 @@ const root=process.env.FORGE_DATA_DIR;fs.mkdirSync(root,{recursive:true});
 const ff=require('../server/ffmpeg'),ai=require('../server/enhance'),studio=require('../server/studio'),{PRESETS}=require('../server/presets');
 (async()=>{
   const image=path.join(root,'face.png');
-  execFileSync(studio.runtime().python,['-c',"from skimage.data import astronaut; import cv2,sys; cv2.imwrite(sys.argv[1],cv2.cvtColor(cv2.resize(astronaut(),(256,256)),cv2.COLOR_RGB2BGR))",image],{windowsHide:true});
+  execFileSync(path.resolve('bin/ai/python/python.exe'),['-c',"from skimage.data import astronaut; import cv2,sys; cv2.imwrite(sys.argv[1],cv2.cvtColor(cv2.resize(astronaut(),(256,256)),cv2.COLOR_RGB2BGR))",image],{windowsHide:true});
   const bins=await ff.locateBinaries(),input=path.join(root,'camera.mp4'),output=path.join(root,'restored.mp4');
   assert.equal((await ff.runBin(bins.ffmpegPath,['-y','-loop','1','-framerate','5','-i',image,'-f','lavfi','-i','sine=frequency=440','-t','0.2','-c:v','libx264','-pix_fmt','yuv420p','-c:a','aac',input])).code,0);
   const probe=ff.normalizeProbe((await ff.probe(input)).data,input),job={logLines:[]};
-  await ai.render({input,output,probe,preset:PRESETS.reels_hq,adv:{encoder:'cpu',enhance:{face:.3,denoise:'ai',crop:'follow'}},job,tempRoot:root,bins});
+  await ai.render({input,output,probe,preset:PRESETS.reels_hq,adv:{encoder:'auto',enhance:{face:.3,denoise:'ai',crop:'follow'}},job,tempRoot:root,bins});
   const after=ff.normalizeProbe((await ff.probe(output)).data,output);assert.equal(after.video.width,144);assert.equal(after.video.height,256);assert.ok(after.audio);assert.ok(Math.abs(after.format.durationSec-.2)<.12);assert.equal((await ff.validatePlayback(output)).ok,true);
   // Cut protection must replace blended intermediate frames with real source frames.
   const source=path.join(root,'cuts'),motion=path.join(root,'motion');fs.mkdirSync(source);fs.mkdirSync(motion);

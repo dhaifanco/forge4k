@@ -69,6 +69,7 @@ async function render({ input, output, probe, preset, adv, job, tempRoot, bins }
     } finally { clearInterval(timer); }
     if (job.cancelRequested) throw new Error('Cancelled');
     if (result.code !== 0) throw new Error('Enhancement failed: ' + (result.error || result.stderr.slice(-700) || result.code));
+    if(!isFfmpeg && result.stdout)job.logLines.push(result.stdout.slice(-1000));
     return result;
   }
   try {
@@ -99,14 +100,14 @@ async function render({ input, output, probe, preset, adv, job, tempRoot, bins }
     }
     filters.push('fps=' + Math.min(p.sourceFps, p.fps), 'format=rgb24');
     stage('Preparing AI frames');
-    await run(bins.ffmpegPath, ['-hide_banner','-nostdin','-y',...seek,'-i',input,'-t',String(p.duration),'-an','-vf',filters.join(','),'-start_number','1',path.join(source,'%08d.png')], true,null,Math.ceil(p.duration*Math.min(p.sourceFps,p.fps)));
+    await run(bins.ffmpegPath, ['-hide_banner','-nostdin','-y',...seek,'-i',input,'-t',String(p.duration),'-an','-vf',filters.join(','),'-compression_level','1','-start_number','1',path.join(source,'%08d.png')], true,null,Math.ceil(p.duration*Math.min(p.sourceFps,p.fps)));
     let images = source;
     let count = fs.readdirSync(images).filter(n => n.endsWith('.png')).length;
     if (!count) throw new Error('No frames could be decoded.');
     if(p.face>0||p.denoise==='ai'||p.crop!=='off') {
       const treated=path.join(work,'treated');fs.mkdirSync(treated);
-      stage(p.face>0?'Restoring faces on CPU':p.denoise==='ai'?'AI noise reduction on CPU':'Framing the subject');
-      await run(studio.runtime().python,studio.workerArgs({...p,input:images,output:treated},work),false,treated,count);
+      stage(p.face>0?'Restoring faces':p.denoise==='ai'?'AI noise reduction':'Framing the subject');
+      await run(studio.runtime().python,studio.workerArgs({...p,inferenceDevice:adv.encoder==='cpu'?'cpu':'auto',input:images,output:treated},work),false,treated,count);
       if(fs.readdirSync(treated).filter(n=>n.endsWith('.png')).length!==count)throw new Error('Studio processing produced incomplete frames.');
       images=treated;
     }
@@ -117,7 +118,7 @@ async function render({ input, output, probe, preset, adv, job, tempRoot, bins }
       if (fs.readdirSync(enhanced).filter(n => n.endsWith('.png')).length !== count) throw new Error('Upscaling produced an incomplete frame sequence.');
       const scaled = path.join(work,'scaled'); fs.mkdirSync(scaled);
       stage('Sizing enhanced frames');
-      await run(bins.ffmpegPath,['-hide_banner','-nostdin','-y','-framerate',String(Math.min(p.sourceFps,p.fps)),'-start_number','1','-i',path.join(enhanced,'%08d.png'),'-vf',`scale=${p.width}:${p.height}:flags=lanczos`,'-start_number','1',path.join(scaled,'%08d.png')],true,null,count);
+      await run(bins.ffmpegPath,['-hide_banner','-nostdin','-y','-framerate',String(Math.min(p.sourceFps,p.fps)),'-start_number','1','-i',path.join(enhanced,'%08d.png'),'-vf',`scale=${p.width}:${p.height}:flags=lanczos`,'-compression_level','1','-start_number','1',path.join(scaled,'%08d.png')],true,null,count);
       // Both paths are fixed children of this freshly created, validated job workspace.
       cleanupChild(enhanced,work); cleanupChild(source,work);
       images=scaled;
@@ -125,7 +126,7 @@ async function render({ input, output, probe, preset, adv, job, tempRoot, bins }
     if(p.scale===1 && p.fps>p.sourceFps+.01 && (p.width!==probe.video.width||p.height!==probe.video.height)){
       const scaled=path.join(work,'scaled');fs.mkdirSync(scaled);
       stage('Sizing motion frames');
-      await run(bins.ffmpegPath,['-hide_banner','-nostdin','-y','-framerate',String(p.sourceFps),'-start_number','1','-i',path.join(images,'%08d.png'),'-vf',`scale=${p.width}:${p.height}:flags=lanczos`,'-start_number','1',path.join(scaled,'%08d.png')],true,null,count);
+      await run(bins.ffmpegPath,['-hide_banner','-nostdin','-y','-framerate',String(p.sourceFps),'-start_number','1','-i',path.join(images,'%08d.png'),'-vf',`scale=${p.width}:${p.height}:flags=lanczos`,'-compression_level','1','-start_number','1',path.join(scaled,'%08d.png')],true,null,count);
       images=scaled;
     }
     if (p.fps > p.sourceFps + .01) {

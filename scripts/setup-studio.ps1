@@ -24,3 +24,7 @@ foreach ($model in $models) {
     if ((Get-FileHash $target -Algorithm SHA256).Hash -ne $model.Hash) { throw ('Model verification failed: ' + $model.Name) }
 }
 Write-Output 'Studio runtime and official model hashes verified.'
+& (Join-Path $pythonRoot 'python.exe') (Join-Path $projectRoot 'scripts/export-studio-onnx.py')
+if ($LASTEXITCODE -ne 0) { throw 'ONNX model conversion failed.' }
+& node (Join-Path $projectRoot 'scripts/prepare-studio-runtime.cjs')
+if ($LASTEXITCODE -ne 0) { throw 'Portable runtime preparation failed.' }

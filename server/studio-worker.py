@@ -16,7 +16,7 @@ def read(file):
     return image
 
 def write(file, image):
-    ok, data = cv2.imencode('.png', image)
+    ok, data = cv2.imencode('.png', image, [cv2.IMWRITE_PNG_COMPRESSION, 1])
     if not ok:
         raise ValueError('Could not encode frame')
     data.tofile(str(file))
@@ -30,7 +30,67 @@ def faces(image, cascade):
     found = cascade.detectMultiScale(cv2.cvtColor(small, cv2.COLOR_BGR2GRAY), 1.15, 5, minSize=(24, 24))
     return [tuple(int(v / ratio) for v in box) for box in found]
 
+class OnnxModel:
+    def __init__(self, file, config):
+        import onnxruntime as ort
+        ort.disable_telemetry_events()
+        self.ort, self.file = ort, str(file)
+        self.options = ort.SessionOptions()
+        self.options.enable_mem_pattern = False
+        self.options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
+        self.options.intra_op_num_threads = max(1, min(6, os.cpu_count() or 1))
+        gpu = config.get('inferenceDevice') != 'cpu' and 'DmlExecutionProvider' in ort.get_available_providers()
+        self.providers = ['DmlExecutionProvider', 'CPUExecutionProvider'] if gpu else ['CPUExecutionProvider']
+        self.session = None
+
+    def __call__(self, tensor):
+        try:
+            if self.session is None:
+                self.session = self.ort.InferenceSession(self.file, self.options, providers=self.providers)
+                print(json.dumps({'inference': Path(self.file).stem, 'providers': self.session.get_providers()}), flush=True)
+            return self.session.run(None, {'image': tensor})[0]
+        except Exception:
+            if self.providers == ['CPUExecutionProvider']:
+                raise
+            # Driver/device failures get one explicit CPU retry, with the same weights.
+            self.providers = ['CPUExecutionProvider']
+            self.session = None
+            print(json.dumps({'inference': Path(self.file).stem, 'fallback': 'CPU'}), flush=True)
+            return self(tensor)
+
+def onnx_models(config):
+    root = Path(config['models'])
+    face = OnnxModel(root / 'face.onnx', config) if config.get('face', 0) else None
+    noise = OnnxModel(root / 'denoise.onnx', config) if config.get('denoise') == 'ai' else None
+    def restore(image):
+        tensor = np.ascontiguousarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB).transpose(2, 0, 1)[None], dtype=np.float32) / 127.5 - 1
+        result = face(tensor)[0].transpose(1, 2, 0)
+        return cv2.cvtColor(((np.clip(result, -1, 1)+1)*127.5).astype(np.uint8), cv2.COLOR_RGB2BGR)
+    def denoise(image):
+        h, w = image.shape[:2]
+        output = np.empty_like(image)
+        # 32 convolutions need a 33-pixel halo to avoid seams between tile cores.
+        halo, core, size = 34, 188, 256
+        for y in range(0, h, core):
+            for x in range(0, w, core):
+                x0, y0 = max(0, x-halo), max(0, y-halo)
+                x1, y1 = min(w, x+core+halo), min(h, y+core+halo)
+                tile = image[y0:y1, x0:x1]
+                tile = cv2.copyMakeBorder(tile, 0, size-tile.shape[0], 0, size-tile.shape[1], cv2.BORDER_REFLECT_101)
+                tensor = np.ascontiguousarray(cv2.cvtColor(tile, cv2.COLOR_BGR2RGB).transpose(2, 0, 1)[None], dtype=np.float32) / 255
+                restored = noise(tensor)[0].transpose(1, 2, 0)
+                restored = cv2.resize(restored, (size, size), interpolation=cv2.INTER_LANCZOS4)
+                end_x, end_y = min(w, x+core), min(h, y+core)
+                pixels = np.rint(np.clip(restored[y-y0:y-y0+end_y-y, x-x0:x-x0+end_x-x], 0, 1)*255).astype(np.uint8)
+                output[y:end_y, x:end_x] = cv2.cvtColor(pixels, cv2.COLOR_RGB2BGR)
+        return output
+    return restore if face else None, denoise if noise else None
+
 def neural_models(config):
+    root = Path(config['models'])
+    required = ([root / 'face.onnx'] if config.get('face', 0) else []) + ([root / 'denoise.onnx'] if config.get('denoise') == 'ai' else [])
+    if all(file.exists() for file in required):
+        return onnx_models(config)
     import torch
     import torchvision.transforms.functional as functional
     # BasicSR 1.4 targets the pre-0.17 torchvision module name.
@@ -52,7 +112,12 @@ def neural_models(config):
         model = SRVGGNetCompact(num_in_ch=3, num_out_ch=3, num_feat=64, num_conv=32, upscale=4, act_type='prelu')
         denoiser = RealESRGANer(scale=4, model_path=str(root / 'realesr-general-x4v3.pth'),
             model=model, tile=128, tile_pad=10, pre_pad=0, half=False, device=torch.device('cpu'))
-    return torch, face_model, denoiser
+    def restore(image):
+        tensor = torch.from_numpy(cv2.cvtColor(image, cv2.COLOR_BGR2RGB).transpose(2, 0, 1).copy()).float().div(127.5).sub(1).unsqueeze(0)
+        with torch.inference_mode():
+            pixels = face_model(tensor, return_rgb=False, randomize_noise=False)[0][0].clamp(-1, 1).add(1).mul(127.5).permute(1, 2, 0).numpy().astype(np.uint8)
+        return cv2.cvtColor(pixels, cv2.COLOR_RGB2BGR)
+    return restore if face_model else None, (lambda image: denoiser.enhance(image, outscale=1)[0]) if denoiser else None
 
 def process(config):
     files = sorted(Path(config['input']).glob('*.png'))
@@ -61,14 +126,14 @@ def process(config):
     dest = Path(config['output']); dest.mkdir(exist_ok=True)
     cascade = detector()
     neural = config.get('face', 0) or config.get('denoise') == 'ai'
-    torch, face_model, denoiser = neural_models(config) if neural else (None, None, None)
+    face_model, denoiser = neural_models(config) if neural else (None, None)
     center = None
     count_faces = 0
     for index, file in enumerate(files):
         original = read(file); image = original.copy()
         boxes = faces(original, cascade) if config.get('face', 0) or config.get('crop') == 'follow' else []
         if denoiser:
-            clean, _ = denoiser.enhance(image, outscale=1)
+            clean = denoiser(image)
             image = cv2.addWeighted(image, .35, clean, .65, 0)
         if face_model:
             for x, y, w, h in boxes:
@@ -77,10 +142,7 @@ def process(config):
                 x1, y1 = min(image.shape[1], x+w+pad), min(image.shape[0], y+h+pad)
                 roi = image[y0:y1, x0:x1]
                 aligned = cv2.resize(roi, (512, 512))
-                tensor = torch.from_numpy(cv2.cvtColor(aligned, cv2.COLOR_BGR2RGB).transpose(2, 0, 1).copy()).float().div(127.5).sub(1).unsqueeze(0)
-                with torch.inference_mode():
-                    restored = face_model(tensor, return_rgb=False, randomize_noise=False)[0][0].clamp(-1, 1).add(1).mul(127.5).permute(1, 2, 0).numpy().astype(np.uint8)
-                restored = cv2.resize(cv2.cvtColor(restored, cv2.COLOR_RGB2BGR), (x1-x0, y1-y0))
+                restored = cv2.resize(face_model(aligned), (x1-x0, y1-y0))
                 mask = np.zeros(roi.shape[:2], np.float32)
                 cv2.ellipse(mask, ((x1-x0)//2, (y1-y0)//2), (max(1,(x1-x0)//3), max(1,(y1-y0)*2//5)), 0, 0, 360, 1, -1)
                 mask = cv2.GaussianBlur(mask, (0, 0), max(1, w*.08))[:, :, None] * config['face']

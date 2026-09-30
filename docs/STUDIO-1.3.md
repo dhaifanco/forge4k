@@ -6,7 +6,7 @@ The ten requested additions are implemented as local processing features:
 | --- | --- | --- |
 | Before/after | Two synchronized players, shared scrub, fit/2x/4x zoom | Source codec must be supported by Chromium; zoomed panes can be scrolled |
 | Smart Auto | Reads source dimensions and first-five-second luma measurements, suggests scale/denoise and keeps cadence | A transparent heuristic, not a trained quality evaluator or a guarantee |
-| AI denoise | Real-ESRGAN `realesr-general-x4v3`, 65% output blend, tiled inference at original size | CPU runtime; can smooth texture and alter detail |
+| AI denoise | Real-ESRGAN `realesr-general-x4v3`, 65% output blend, tiled inference at original size | DirectML GPU with CPU fallback from 1.3.1; can smooth texture and alter detail |
 | Face enhancement | GFPGANv1.4 with deterministic noise and feathered strength blend over frontal-face detections | Haar frontal-face crops, not landmark alignment or identity recognition; profile/occluded faces can be missed and generated details can change appearance |
 | Motion protection | Pixel-change cut detection; optionally conservative fast-motion detection; replaces risky interpolated frames with nearest source frames | Frame holds trade smoothness for less ghosting; heuristic thresholds can miss or over-detect cuts |
 | Pause/resume | Validated five-second export sections on disk; resumes completed sections after reopening | Pauses at a section boundary; restarts unfinished section; remux is not segmented; changed source/settings reject stale checkpoints |
@@ -15,7 +15,7 @@ The ten requested additions are implemented as local processing features:
 | Compression preview | Real five-second H.264 720p encode, CRF 32, capped at 1.5 Mbps | Illustrative heavy compression, not an exact TikTok/Instagram simulator |
 | Saved presets / batch destinations | Local preset library, apply to all sources, additional TikTok/Reels/master outputs | Each destination must accept the selected FPS; jobs share source ownership until all finish |
 
-All ten controls are backed by processing or persisted state, not placeholders. Face restoration and denoising add a CPU Python runtime to the standalone distribution. ESRGAN upscale and RIFE remain Vulkan engines. No user footage is uploaded and no model is fetched at runtime.
+All ten controls are backed by processing or persisted state, not placeholders. From 1.3.1, face restoration and denoising use a portable ONNX Runtime with DirectML GPU acceleration and CPU fallback. ESRGAN upscale and RIFE remain Vulkan engines. No user footage is uploaded and no model is fetched at runtime. See [core performance measurements](CORE-1.3.1.md).
 
 ## Runtime provenance
 

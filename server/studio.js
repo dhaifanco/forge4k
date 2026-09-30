@@ -13,11 +13,13 @@ function options(value = {}) {
 }
 function runtime() {
   const root = path.join(process.env.FORCE_FFMPEG_DIR || path.join(__dirname,'..','bin'),'ai');
-  return { python: path.join(root,'python','python.exe'), models: path.join(root,'models') };
+  const portable=path.join(root,'runtime','python.exe');
+  return { python: fs.existsSync(portable)?portable:path.join(root,'python','python.exe'), models: path.join(root,'models') };
 }
 function capabilities() {
   const r=runtime(), python=fs.existsSync(r.python)&&fs.existsSync(path.join(path.dirname(r.python),'Lib','site-packages','cv2','__init__.py'));
-  return {tracking:python,face:python&&fs.existsSync(path.join(r.models,'GFPGANv1.4.pth')),denoise:python&&fs.existsSync(path.join(r.models,'realesr-general-x4v3.pth'))};
+  const model=(onnx,legacy)=>fs.existsSync(path.join(r.models,onnx))||fs.existsSync(path.join(r.models,legacy));
+  return {tracking:python,face:python&&model('face.onnx','GFPGANv1.4.pth'),denoise:python&&model('denoise.onnx','realesr-general-x4v3.pth')};
 }
 function workerArgs(config, folder) {
   const file=path.join(folder,'studio-task.json');

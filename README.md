@@ -16,6 +16,7 @@ Choose the latest setup executable to install, or the portable executable to run
 - Smart Auto suggestions, saved presets and multiple export destinations per source.
 - Optional GFPGAN face blend, Real-ESRGAN AI denoise, 9:16 face-follow/manual crop, stabilization and compression preview. [Studio guide and limitations](docs/STUDIO-1.3.md).
 - Signed GitHub updates and offline update import.
+- GPU face restoration and denoising with CPU fallback; lean portable runtime. [Core performance measurements](docs/CORE-1.3.1.md).
 - Real-ESRGAN 2x/4x detail enhancement, RIFE 60/120fps interpolation, gentle temporal noise reduction and playable 5-second samples. [Enhancement guide and limitations](docs/AI-ENHANCEMENT.md).
 
 Platforms still apply their own compression. Forge cannot guarantee lossless TikTok/Instagram playback or 4K120 delivery online.

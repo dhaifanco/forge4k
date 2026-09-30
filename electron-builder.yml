@@ -8,6 +8,7 @@ files:
   - server/**
   - dist/**
   - package.json
+  - '!**/__pycache__/**'
 asarUnpack:
   - server/studio-worker.py
 extraResources:
@@ -17,6 +18,8 @@ extraResources:
       - '**/*'
       - '!**/__pycache__/**'
       - '!ai/python/Scripts/**'
+      - '!ai/python/**'
+      - '!ai/models/*.pth'
   - from: docs/THIRD-PARTY-NOTICES.txt
     to: THIRD-PARTY-NOTICES.txt
 win:
